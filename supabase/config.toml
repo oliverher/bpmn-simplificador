@@ -1,0 +1,4 @@
+project_id = "dsdibbpdlltpxoshizoz"
+
+[functions.analyze-process]
+verify_jwt = true
