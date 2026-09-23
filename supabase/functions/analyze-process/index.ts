@@ -66,7 +66,8 @@ const MODELING_RULES = `Boas práticas de modelagem BPMN 2.0 (siga TODAS):
 - Todo elemento deve estar no caminho entre o início e algum fim: sem elementos soltos, sem fluxos sem destino.
 - Cada raia representa um ator/setor responsável (nome curto, ex: "Servidor", "Gerente", "Sistema"); não crie raias sem atividades.
 - Mantenha o diagrama legível: no máximo ~20 elementos no as-is; nomes curtos.
-- Todos os textos em português.`;
+- Todos os textos em português.
+- Em qualquer texto explicativo (resumo, problemas, melhorias), refira-se às etapas pelo NOME em linguagem natural (ex: "a coleta biométrica"), NUNCA por ids técnicos como "task_x" ou "gw_y".`;
 
 interface RequestBody {
   inputType: "process_name" | "activities_list";

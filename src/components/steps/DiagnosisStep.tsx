@@ -25,13 +25,15 @@ export function DiagnosisStep({ result, onBack, onContinue }: Props) {
               <li key={i}>{issue}</li>
             ))}
           </ul>
-          <div className="metric-card">
-            <span className="metric-label">Etapas no processo atual</span>
-            <span className="metric-values">{result.metrics.steps_before}</span>
-          </div>
-          <div className="metric-card">
-            <span className="metric-label">Handoffs entre atores</span>
-            <span className="metric-values">{result.metrics.handoffs_before}</span>
+          <div className="issues-metrics">
+            <div className="metric-card">
+              <span className="metric-label">Etapas no processo atual</span>
+              <span className="metric-values">{result.metrics.steps_before}</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Handoffs entre atores</span>
+              <span className="metric-values">{result.metrics.handoffs_before}</span>
+            </div>
           </div>
         </div>
       </div>

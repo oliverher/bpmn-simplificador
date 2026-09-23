@@ -27,13 +27,15 @@ export function SimplifyStep({ result, onBack, onContinue }: Props) {
               <li key={i}>{rec}</li>
             ))}
           </ul>
-          <div className="metric-card">
-            <span className="metric-label">Etapas no processo simplificado</span>
-            <span className="metric-values">{result.metrics.steps_after}</span>
-          </div>
-          <div className="metric-card">
-            <span className="metric-label">Handoffs entre atores</span>
-            <span className="metric-values">{result.metrics.handoffs_after}</span>
+          <div className="issues-metrics">
+            <div className="metric-card">
+              <span className="metric-label">Etapas no processo simplificado</span>
+              <span className="metric-values">{result.metrics.steps_after}</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Handoffs entre atores</span>
+              <span className="metric-values">{result.metrics.handoffs_after}</span>
+            </div>
           </div>
         </div>
       </div>

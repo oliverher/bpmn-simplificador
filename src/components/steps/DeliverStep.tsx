@@ -97,7 +97,7 @@ export function DeliverStep({ result, onBack, onRestart }: Props) {
         </div>
       </div>
 
-      <div className="diagrams-row">
+      <div className="diagrams-row diagrams-row--stack">
         <div className="diagram-column">
           <h3>Processo atual (as-is)</h3>
           <BpmnViewer xml={result.asIs.xml} />
