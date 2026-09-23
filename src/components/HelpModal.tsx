@@ -14,8 +14,9 @@ export function HelpModal({ onClose }: Props) {
         </div>
         <ol className="help-steps">
           <li>
-            <strong>Começar:</strong> informe o nome do processo, ou envie a descrição em PDF, planilha (XLSX) ou
-            texto colado.
+            <strong>Começar:</strong> informe o nome do processo, cole o texto, ou arraste arquivos com a descrição
+            (PDF, Word, PowerPoint, Excel, CSV, TXT, HTML ou imagens). Um arquivo BPMN já pronto é usado direto como o
+            processo atual. Imagens e PDFs escaneados são lidos por IA.
           </li>
           <li>
             <strong>Conferir:</strong> revise o que foi entendido antes de seguir para a análise da IA.
