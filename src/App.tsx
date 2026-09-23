@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { Header } from "./components/Header";
 import { Stepper } from "./components/Stepper";
@@ -18,11 +18,26 @@ interface StartData {
 }
 
 function App() {
+  const [sessionReady, setSessionReady] = useState(false);
   const [step, setStep] = useState(1);
   const [startData, setStartData] = useState<StartData | null>(null);
   const [result, setResult] = useState<ProcessAnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function ensureSession() {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session) {
+        const { error: signInError } = await supabase.auth.signInAnonymously();
+        if (signInError) {
+          console.error("Falha ao iniciar sessão anônima:", signInError.message);
+        }
+      }
+      setSessionReady(true);
+    }
+    ensureSession();
+  }, []);
 
   function handleStartContinue(data: StartData) {
     setStartData(data);
@@ -69,6 +84,10 @@ function App() {
     setStartData(null);
     setResult(null);
     setError(null);
+  }
+
+  if (!sessionReady) {
+    return <div className="loading-screen">Carregando...</div>;
   }
 
   return (

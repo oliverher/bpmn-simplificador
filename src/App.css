@@ -41,6 +41,15 @@ button {
   flex-direction: column;
 }
 
+.loading-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-size: 1.1rem;
+  color: var(--text-muted);
+}
+
 /* Header */
 .app-header {
   display: flex;
@@ -319,10 +328,14 @@ button {
 
 .start-layout {
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   gap: 1.5rem;
   text-align: left;
+}
+
+.start-layout .continue-button {
+  align-self: center;
 }
 
 .start-card {
@@ -566,11 +579,6 @@ button {
 }
 
 @media (max-width: 900px) {
-  .start-layout {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .diagnosis-layout,
   .diagrams-row,
   .review-context-grid {
