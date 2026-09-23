@@ -67,15 +67,9 @@ button {
 }
 
 .app-header-logo {
-  font-size: 1.6rem;
-}
-
-.app-header-org {
-  font-family: Georgia, "Times New Roman", serif;
-  font-weight: 700;
-  color: var(--brand-green-dark);
-  font-size: 1.05rem;
-  line-height: 1.1;
+  height: 40px;
+  width: auto;
+  display: block;
 }
 
 .app-header-title {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { HelpModal } from "./HelpModal";
+import logoEstadoGoias from "../assets/logo-estado-goias.png";
 
 export function Header() {
   const [helpOpen, setHelpOpen] = useState(false);
@@ -8,12 +9,7 @@ export function Header() {
     <>
       <header className="app-header">
         <div className="app-header-brand">
-          <span className="app-header-logo" aria-hidden="true">
-            🌿
-          </span>
-          <div>
-            <div className="app-header-org">Estado de Goiás</div>
-          </div>
+          <img src={logoEstadoGoias} alt="Estado de Goiás" className="app-header-logo" />
         </div>
         <div className="app-header-title">
           <span className="app-header-product">Assistente de Melhoria de Processos</span>
