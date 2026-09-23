@@ -110,10 +110,36 @@ class AiFieldError extends Error {
   }
 }
 
-/** Chama a Claude API forçando uma tool call com EXATAMENTE uma propriedade obrigatória no topo,
- *  já que pedir múltiplos campos numa única chamada mostrou-se pouco confiável (o modelo às vezes
- *  completa a chamada omitindo um dos campos, mesmo marcados como obrigatórios). */
+/** Chama a Claude API forçando uma tool call com EXATAMENTE uma propriedade obrigatória no topo
+ *  (pedir múltiplos campos numa única chamada mostrou-se pouco confiável), e repete até 3 vezes
+ *  quando a IA omite o campo ou devolve uma estrutura incompleta — uma falha intermitente e não
+ *  determinística do modelo, não algo que reformular o prompt sozinho elimina. */
 async function callClaudeSingleField<T>(
+  system: string,
+  userContent: string,
+  toolName: string,
+  fieldName: string,
+  fieldSchema: Record<string, unknown>,
+  isValid: (value: T) => boolean = () => true
+): Promise<T> {
+  let lastError: AiFieldError | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const value = await callClaudeSingleFieldOnce<T>(system, userContent, toolName, fieldName, fieldSchema);
+      if (!isValid(value)) {
+        lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, [fieldName], "invalid_structure");
+        continue;
+      }
+      return value;
+    } catch (err) {
+      if (!(err instanceof AiFieldError)) throw err;
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
+async function callClaudeSingleFieldOnce<T>(
   system: string,
   userContent: string,
   toolName: string,
@@ -214,7 +240,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       contextLines,
       "submit_as_is_graph",
       "as_is",
-      graphSchema
+      graphSchema,
+      isValidRawGraph
     );
 
     if (!isValidRawGraph(asIsRaw)) {
@@ -233,14 +260,16 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       diagnosisUserContent,
       "submit_summary",
       "summary",
-      { type: "string" }
+      { type: "string" },
+      (v) => typeof v === "string" && v.trim().length > 0
     );
     const issuesFound = await callClaudeSingleField<string[]>(
       `${baseSystem}\n\nIdentifique, em português, os problemas do processo as-is fornecido (redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes, etapas que não agregam valor). Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       diagnosisUserContent,
       "submit_issues",
       "issues_found",
-      { type: "array", items: { type: "string" } }
+      { type: "array", items: { type: "string" } },
+      (v) => Array.isArray(v) && v.length > 0
     );
 
     // 3) Modelar o to-be
@@ -259,7 +288,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       toBeUserContent,
       "submit_to_be_graph",
       "to_be",
-      graphSchema
+      graphSchema,
+      isValidRawGraph
     );
 
     if (!isValidRawGraph(toBeRaw)) {
@@ -275,7 +305,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       `Modelagem as-is:\n${asIsSummaryText}\n\nModelagem to-be:\n${graphSummaryText(toBeRaw)}`,
       "submit_recommendations",
       "recommendations",
-      { type: "array", items: { type: "string" } }
+      { type: "array", items: { type: "string" } },
+      (v) => Array.isArray(v) && v.length > 0
     );
 
     const asIsGraph = toBpmnGraph(asIsRaw);
