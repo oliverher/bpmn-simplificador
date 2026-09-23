@@ -56,8 +56,8 @@ const TAG: Record<BpmnElementType, string> = {
   parallelGateway: "bpmn:parallelGateway",
 };
 
-function escapeXml(value: string): string {
-  return value
+function escapeXml(value: string | undefined | null): string {
+  return (value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

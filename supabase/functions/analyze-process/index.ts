@@ -190,7 +190,7 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 8000,
+        max_tokens: 16000,
         system: SYSTEM_PROMPT,
         tools: [toolSchema],
         tool_choice: { type: "tool", name: "submit_process_analysis" },
@@ -222,6 +222,17 @@ Deno.serve(async (req: Request) => {
       analysis: { summary: string; issues_found: string[]; recommendations: string[] };
       metrics: { steps_before: number; steps_after: number; handoffs_before: number; handoffs_after: number };
     };
+
+    if (!result?.as_is || !result?.to_be) {
+      return new Response(
+        JSON.stringify({
+          error: "Formato inesperado retornado pela IA.",
+          debug_tool_input_keys: Object.keys(toolUse.input ?? {}),
+          debug_stop_reason: anthropicData.stop_reason,
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const asIsXml = buildBpmnXml(toBpmnGraph(result.as_is));
     const toBeXml = buildBpmnXml(toBpmnGraph(result.to_be));
