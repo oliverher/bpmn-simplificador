@@ -16,7 +16,7 @@ export function DiagnosisStep({ result, onBack, onContinue }: Props) {
       <div className="diagnosis-layout">
         <div className="diagram-column">
           <h3>Processo atual (as-is)</h3>
-          <BpmnViewer xml={result.asIs.xml} title={`${result.processName}-as-is`} />
+          <BpmnViewer xml={result.asIs.xml} />
         </div>
         <div className="issues-column">
           <h3>Problemas identificados</h3>

@@ -18,7 +18,7 @@ export function SimplifyStep({ result, onBack, onContinue }: Props) {
       <div className="diagnosis-layout">
         <div className="diagram-column">
           <h3>Processo simplificado (to-be)</h3>
-          <BpmnViewer xml={result.toBe.xml} title={`${result.processName}-to-be`} />
+          <BpmnViewer xml={result.toBe.xml} />
         </div>
         <div className="issues-column">
           <h3>Melhorias aplicadas</h3>

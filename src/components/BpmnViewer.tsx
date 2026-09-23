@@ -6,10 +6,13 @@ import "bpmn-js/dist/assets/bpmn-font/css/bpmn-embedded.css";
 
 interface Props {
   xml: string;
-  title: string;
 }
 
-export function BpmnViewer({ xml, title }: Props) {
+interface CanvasApi {
+  zoom: (level?: number | "fit-viewport", center?: "auto") => number;
+}
+
+export function BpmnViewer({ xml }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<InstanceType<typeof NavigatedViewer> | null>(null);
 
@@ -21,54 +24,36 @@ export function BpmnViewer({ xml, title }: Props) {
 
     viewer
       .importXML(xml)
-      .then(() => {
-        const canvas = viewer.get("canvas") as { zoom: (mode: string) => void };
-        canvas.zoom("fit-viewport");
-      })
-      .catch((err: Error) => {
-        console.error("Erro ao renderizar BPMN:", err);
-      });
+      .then(() => (viewer.get("canvas") as CanvasApi).zoom("fit-viewport", "auto"))
+      .catch((err: Error) => console.error("Erro ao renderizar BPMN:", err));
 
-    return () => {
-      viewer.destroy();
-    };
+    return () => viewer.destroy();
   }, [xml]);
 
-  async function handleExportXml() {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    const { xml: exportedXml } = await viewer.saveXML({ format: true });
-    downloadFile(`${title}.bpmn`, exportedXml ?? "", "application/xml");
+  function zoomBy(factor: number) {
+    const canvas = viewerRef.current?.get("canvas") as CanvasApi | undefined;
+    if (canvas) canvas.zoom((canvas.zoom() as number) * factor);
   }
 
-  async function handleExportSvg() {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    const { svg } = await viewer.saveSVG();
-    downloadFile(`${title}.svg`, svg, "image/svg+xml");
+  function fit() {
+    (viewerRef.current?.get("canvas") as CanvasApi | undefined)?.zoom("fit-viewport", "auto");
   }
 
   return (
     <div className="bpmn-viewer-wrapper">
       <div className="bpmn-viewer-actions">
-        <button type="button" onClick={handleExportXml}>
-          Exportar .bpmn
+        <button type="button" onClick={() => zoomBy(1.25)} aria-label="Aumentar zoom">
+          +
         </button>
-        <button type="button" onClick={handleExportSvg}>
-          Exportar .svg
+        <button type="button" onClick={() => zoomBy(0.8)} aria-label="Diminuir zoom">
+          −
         </button>
+        <button type="button" onClick={fit}>
+          Ajustar à tela
+        </button>
+        <span className="bpmn-viewer-hint">Arraste para mover · Ctrl + roda do mouse para ampliar</span>
       </div>
       <div className="bpmn-canvas" ref={containerRef} />
     </div>
   );
-}
-
-function downloadFile(filename: string, content: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }

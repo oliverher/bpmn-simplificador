@@ -1,4 +1,4 @@
-import { buildBpmnXml, computeGraphMetrics, type BpmnGraph } from "../_shared/bpmn-builder.ts";
+import { buildBpmnXml, computeGraphMetrics, sanitizeGraph, type BpmnGraph } from "../_shared/bpmn-builder.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -56,12 +56,17 @@ const graphSchema = {
   required: ["process_name", "lanes", "elements", "flows"],
 };
 
-const MODELING_RULES = `Regras de modelagem BPMN:
-- IDs devem ser únicos, curtos, sem espaços/acentos (ex: "start1", "task_analise", "gw_aprovado").
-- Todo elemento deve pertencer a uma lane existente.
-- Todo flow deve referenciar ids de elementos existentes.
-- Gateways exclusivos com múltiplas saídas devem nomear cada flow de saída (ex: "Sim"/"Não", "Aprovado"/"Reprovado").
-- Nomes de elementos e raias em português, claros e curtos.`;
+const MODELING_RULES = `Boas práticas de modelagem BPMN 2.0 (siga TODAS):
+- IDs únicos, curtos, sem espaços/acentos (ex: "start1", "task_analise", "gw_aprovado"). Todo elemento pertence a uma lane existente; todo flow referencia ids existentes.
+- Exatamente UM evento de início (nome = gatilho, ex: "Solicitação recebida") e um evento de fim para CADA desfecho distinto (nome = resultado, ex: "Férias autorizadas", "Solicitação negada").
+- Atividades: nome no formato verbo no infinitivo + objeto, até 5 palavras (ex: "Analisar solicitação"). Use "userTask" para trabalho humano em sistema, "serviceTask" para etapas automáticas/sistêmicas e "task" nos demais casos.
+- Cada atividade tem EXATAMENTE 1 fluxo de entrada e 1 de saída. Divisões e junções de fluxo SÓ podem ser feitas com gateways (nunca duas saídas saindo de uma atividade).
+- Gateway exclusivo (decisão): nome em forma de pergunta (ex: "Documentos completos?"), 2+ saídas, TODAS com rótulo da resposta ("Sim"/"Não", "Aprovado"/"Reprovado"). Gateway paralelo apenas para atividades realmente simultâneas, sempre fechado por outro gateway paralelo.
+- Retrabalho (voltar a etapa anterior) só através de um gateway exclusivo com saída rotulada. Sem ciclos infinitos.
+- Todo elemento deve estar no caminho entre o início e algum fim: sem elementos soltos, sem fluxos sem destino.
+- Cada raia representa um ator/setor responsável (nome curto, ex: "Servidor", "Gerente", "Sistema"); não crie raias sem atividades.
+- Mantenha o diagrama legível: no máximo ~20 elementos no as-is; nomes curtos.
+- Todos os textos em português.`;
 
 interface RequestBody {
   inputType: "process_name" | "activities_list";
@@ -280,7 +285,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
     const toBeRaw = await callClaudeSingleField<RawGraph>(
       `${baseSystem}
 
-Proponha a versão "to-be" (simplificada) do processo cuja modelagem as-is e diagnóstico você recebeu, aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), reduzindo etapas e handoffs sempre que possível, SEM remover controles/aprovações obrigatórios por lei ou compliance.
+Proponha a versão "to-be" (simplificada) do processo cuja modelagem as-is e diagnóstico você recebeu, aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), SEM remover controles/aprovações obrigatórios por lei ou compliance.
+O to-be DEVE ter MENOS atividades (task/userTask/serviceTask) do que o as-is e, sempre que possível, menos trocas de raia (handoffs): elimine etapas redundantes, combine etapas do mesmo ator, automatize verificações com serviceTask e remova retrabalho evitável. Mantenha o mesmo nome de processo e, quando fizer sentido, as mesmas raias.
 
 ${MODELING_RULES}
 
@@ -309,8 +315,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       (v) => Array.isArray(v) && v.length > 0
     );
 
-    const asIsGraph = toBpmnGraph(asIsRaw);
-    const toBeGraph = toBpmnGraph(toBeRaw);
+    const asIsGraph = sanitizeGraph(toBpmnGraph(asIsRaw));
+    const toBeGraph = sanitizeGraph(toBpmnGraph(toBeRaw));
     const asIsXml = buildBpmnXml(asIsGraph);
     const toBeXml = buildBpmnXml(toBeGraph);
     const asIsMetrics = computeGraphMetrics(asIsGraph);

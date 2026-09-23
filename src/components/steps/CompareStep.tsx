@@ -29,11 +29,11 @@ export function CompareStep({ result, onBack, onContinue }: Props) {
       <div className="diagrams-row">
         <div className="diagram-column">
           <h3>As-Is (atual)</h3>
-          <BpmnViewer xml={result.asIs.xml} title={`${result.processName}-as-is`} />
+          <BpmnViewer xml={result.asIs.xml} />
         </div>
         <div className="diagram-column">
           <h3>To-Be (simplificado)</h3>
-          <BpmnViewer xml={result.toBe.xml} title={`${result.processName}-to-be`} />
+          <BpmnViewer xml={result.toBe.xml} />
         </div>
       </div>
 

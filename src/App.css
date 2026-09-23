@@ -560,6 +560,7 @@ button {
 
 .bpmn-viewer-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.5rem;
   border-bottom: 1px solid #eee;
@@ -567,15 +568,113 @@ button {
 
 .bpmn-viewer-actions button {
   font-size: 0.8rem;
-  padding: 0.4rem 0.7rem;
-  border: 1px solid #ccc;
-  background: #f9fafb;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #c9d1cc;
+  background: #f4f7f5;
+  color: var(--text-main);
   border-radius: 6px;
 }
 
+.bpmn-viewer-actions button:hover {
+  background: var(--brand-green-light);
+}
+
+.bpmn-viewer-hint {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
 .bpmn-canvas {
-  height: 420px;
+  height: 480px;
   width: 100%;
+}
+
+.step-title,
+.step-subtitle {
+  text-align: center;
+}
+
+.deliver-panel {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.deliver-section h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.7rem;
+}
+
+.deliver-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.8rem;
+}
+
+.deliver-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+}
+
+.format-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.8rem;
+}
+
+.format-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.8rem 1rem;
+  cursor: pointer;
+  background: #fff;
+}
+
+.format-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.format-card--active {
+  border-color: var(--brand-green);
+  background: var(--brand-green-light);
+  box-shadow: 0 0 0 1px var(--brand-green);
+}
+
+.format-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.format-description {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.deliver-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.deliver-done {
+  color: #16a34a;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {
