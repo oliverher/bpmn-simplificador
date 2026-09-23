@@ -1,67 +1,149 @@
 import { useRef, useState } from "react";
-import { extractTextFromPdf, extractTextFromXlsx } from "../../lib/fileExtract";
+import {
+  ACCEPT_ATTRIBUTE,
+  FORMATS_HINT,
+  MAX_IMAGES,
+  canvasesToImages,
+  extractFromFile,
+  type ExtractedFile,
+} from "../../lib/fileExtract";
+import type { BpmnGraphResult, ImageInput } from "../../lib/types";
 
-export type StartTab = "process_name" | "pdf" | "xlsx" | "paste";
+export type StartTab = "process_name" | "file" | "paste";
+
+export interface StartData {
+  tab: StartTab;
+  processName: string;
+  extractedText: string;
+  images: ImageInput[];
+  bpmnGraph?: BpmnGraphResult;
+  fileNames: string[];
+}
 
 interface Props {
-  onContinue: (data: { tab: StartTab; processName: string; extractedText: string }) => void;
+  onContinue: (data: StartData) => void;
+}
+
+interface FileEntry {
+  id: number;
+  name: string;
+  size: number;
+  status: "reading" | "ok" | "error";
+  result?: ExtractedFile;
+  message?: string;
 }
 
 const DEMO_PROCESS_NAME = "Emissão de Carteira de Identidade Nacional (CIN)";
+let nextFileId = 1;
+
+const formatSize = (bytes: number) =>
+  bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+const KIND_LABEL: Record<ExtractedFile["kind"], string> = {
+  text: "Texto",
+  images: "Imagem (lida por IA)",
+  bpmn: "Diagrama BPMN",
+};
 
 export function StartStep({ onContinue }: Props) {
   const [tab, setTab] = useState<StartTab>("process_name");
   const [processName, setProcessName] = useState("");
   const [pastedText, setPastedText] = useState("");
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [extractedText, setExtractedText] = useState("");
-  const [extracting, setExtracting] = useState(false);
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const tabs: { id: StartTab; label: string }[] = [
     { id: "process_name", label: "Nome do processo" },
-    { id: "pdf", label: "Enviar PDF" },
-    { id: "xlsx", label: "Enviar XLSX" },
+    { id: "file", label: "Enviar arquivo" },
     { id: "paste", label: "Colar texto" },
   ];
 
-  async function handleFile(file: File) {
+  async function addFiles(list: FileList | File[]) {
     setError(null);
-    setFileName(file.name);
-    setExtracting(true);
-    try {
-      const text = tab === "pdf" ? await extractTextFromPdf(file) : await extractTextFromXlsx(file);
-      if (!text) {
-        setError("Não consegui extrair texto desse arquivo. Tente outro arquivo ou cole o texto manualmente.");
+    for (const file of Array.from(list)) {
+      const id = nextFileId++;
+      setFiles((prev) => [...prev, { id, name: file.name, size: file.size, status: "reading" }]);
+      try {
+        const result = await extractFromFile(file);
+        setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: "ok", result } : f)));
+      } catch (err) {
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === id ? { ...f, status: "error", message: (err as Error).message || "Falha ao ler o arquivo." } : f
+          )
+        );
       }
-      setExtractedText(text);
-    } catch {
-      setError("Falha ao ler o arquivo. Verifique se ele não está corrompido ou protegido por senha.");
-    } finally {
-      setExtracting(false);
     }
   }
 
-  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+  const okFiles = files.filter((f) => f.status === "ok" && f.result);
+  const reading = files.some((f) => f.status === "reading");
+  const bpmnFiles = okFiles.filter((f) => f.result!.kind === "bpmn");
+  const imageCount = okFiles.reduce((n, f) => n + (f.result!.kind === "images" ? f.result!.canvases.length : 0), 0);
+
+  function fileProblem(): string | null {
+    if (bpmnFiles.length > 1) return "Envie um arquivo BPMN por vez.";
+    if (bpmnFiles.length === 1 && okFiles.length > 1) {
+      return "O arquivo BPMN já é o processo modelado; remova os outros arquivos ou envie-o sozinho.";
+    }
+    if (imageCount > MAX_IMAGES) return `Há imagens demais (${imageCount}). O limite é ${MAX_IMAGES} por análise.`;
+    return null;
   }
 
   function canContinue() {
     if (tab === "process_name") return processName.trim().length > 0;
     if (tab === "paste") return pastedText.trim().length > 0;
-    return extractedText.trim().length > 0 && !extracting;
+    return okFiles.length > 0 && !reading && !fileProblem();
   }
 
   function handleContinue() {
     if (tab === "process_name") {
-      onContinue({ tab, processName: processName.trim(), extractedText: "" });
-    } else if (tab === "paste") {
-      onContinue({ tab, processName: "", extractedText: pastedText.trim() });
-    } else {
-      onContinue({ tab, processName: "", extractedText: extractedText.trim() });
+      onContinue({ tab, processName: processName.trim(), extractedText: "", images: [], fileNames: [] });
+      return;
+    }
+    if (tab === "paste") {
+      onContinue({ tab, processName: "", extractedText: pastedText.trim(), images: [], fileNames: [] });
+      return;
+    }
+
+    const problem = fileProblem();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    const bpmn = bpmnFiles[0]?.result;
+    if (bpmn?.kind === "bpmn") {
+      onContinue({
+        tab,
+        processName: bpmn.graph.process_name,
+        extractedText: "",
+        images: [],
+        bpmnGraph: bpmn.graph,
+        fileNames: okFiles.map((f) => f.name),
+      });
+      return;
+    }
+
+    const texts = okFiles.filter((f) => f.result!.kind === "text");
+    const text = texts
+      .map((f) => {
+        const body = (f.result as { text: string }).text;
+        return texts.length > 1 ? `=== Arquivo: ${f.name} ===\n${body}` : body;
+      })
+      .join("\n\n");
+    const canvases = okFiles.flatMap((f) => (f.result!.kind === "images" ? f.result!.canvases : []));
+    try {
+      onContinue({
+        tab,
+        processName: "",
+        extractedText: text,
+        images: canvases.length > 0 ? canvasesToImages(canvases) : [],
+        fileNames: okFiles.map((f) => f.name),
+      });
+    } catch (err) {
+      setError((err as Error).message);
     }
   }
 
@@ -70,12 +152,14 @@ export function StartStep({ onContinue }: Props) {
     setProcessName(DEMO_PROCESS_NAME);
   }
 
+  const problem = fileProblem();
+
   return (
     <div className="start-step">
       <h1 className="start-headline">Vamos redesenhar o Processo em uma experiência mais simples.</h1>
       <p className="start-subtext">
-        Informe o nome do processo, ou envie a descrição atual em PDF, planilha ou texto colado. Você poderá
-        conferir cada informação antes de qualquer análise.
+        Informe o nome do processo ou envie um arquivo com a descrição atual, em texto, planilha, documento, imagem e
+        outros formatos. Você poderá conferir cada informação antes de qualquer análise.
       </p>
 
       <div className="start-layout">
@@ -110,42 +194,85 @@ export function StartStep({ onContinue }: Props) {
               </div>
             )}
 
-            {(tab === "pdf" || tab === "xlsx") && (
-              <div
-                className="dropzone"
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  hidden
-                  accept={tab === "pdf" ? "application/pdf" : ".xlsx,.xls"}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFile(file);
+            {tab === "file" && (
+              <>
+                <div
+                  className={`dropzone ${dragging ? "dropzone--active" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
                   }}
-                />
-                <span className="dropzone-icon" aria-hidden="true">
-                  ⬆
-                </span>
-                {extracting ? (
-                  <p className="dropzone-title">Lendo {fileName}...</p>
-                ) : fileName && extractedText ? (
-                  <>
-                    <p className="dropzone-title">{fileName}</p>
-                    <p className="dropzone-hint">Arquivo lido com sucesso. Clique para trocar.</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="dropzone-title">
-                      Escolha ou arraste o {tab === "pdf" ? "PDF" : "XLSX"} do processo
-                    </p>
-                    <p className="dropzone-hint">{tab === "pdf" ? "PDF com até 15 MB" : "XLSX ou XLS"}</p>
-                  </>
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragging(false);
+                    if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    hidden
+                    multiple
+                    accept={ACCEPT_ATTRIBUTE}
+                    onChange={(e) => {
+                      if (e.target.files) addFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className="dropzone-icon" aria-hidden="true">
+                    ⬆
+                  </span>
+                  <p className="dropzone-title">Arraste os arquivos aqui ou clique para buscar no computador</p>
+                  <p className="dropzone-hint">{FORMATS_HINT}. Até 15 MB por arquivo.</p>
+                </div>
+
+                {files.length > 0 && (
+                  <ul className="file-list">
+                    {files.map((f) => (
+                      <li key={f.id} className={`file-item file-item--${f.status}`}>
+                        <div className="file-item-main">
+                          <span className="file-item-name">{f.name}</span>
+                          <span className="file-item-meta">
+                            {formatSize(f.size)} ·{" "}
+                            {f.status === "reading" && "Lendo..."}
+                            {f.status === "ok" && f.result && KIND_LABEL[f.result.kind]}
+                            {f.status === "error" && (f.message ?? "Erro")}
+                          </span>
+                          {f.status === "ok" && f.result && "note" in f.result && f.result.note && (
+                            <span className="file-item-note">{f.result.note}</span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="file-item-remove"
+                          aria-label={`Remover ${f.name}`}
+                          onClick={() => setFiles((prev) => prev.filter((x) => x.id !== f.id))}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
-              </div>
+
+                {imageCount > 0 && !problem && (
+                  <p className="file-privacy">
+                    Imagens e PDFs escaneados são lidos por IA e enviados ao serviço da Anthropic. Não envie
+                    documentos sigilosos.
+                  </p>
+                )}
+                {problem && <p className="start-error">{problem}</p>}
+              </>
             )}
 
             {tab === "paste" && (

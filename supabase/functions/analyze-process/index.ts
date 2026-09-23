@@ -76,12 +76,48 @@ const MODELING_RULES = `Boas práticas de modelagem BPMN 2.0 (siga TODAS):
 - Em qualquer texto explicativo (resumo, problemas, melhorias), refira-se às etapas pelo NOME em linguagem natural (ex: "a coleta biométrica"), NUNCA por ids técnicos como "task_x" ou "gw_y".`;
 
 interface RequestBody {
+  /** "transcribe": só lê as imagens e devolve o texto; padrão: análise completa. */
+  mode?: "analyze" | "transcribe";
   inputType: "process_name" | "activities_list";
   input: string;
   department?: string;
   actors?: string;
   constraintsNotes?: string;
+  images?: { media_type: string; data: string }[];
+  /** Processo atual já modelado (BPMN importado): dispensa a modelagem do as-is. */
+  asIsGraph?: unknown;
 }
+
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+const MAX_IMAGES = 8;
+const MAX_IMAGES_CHARS = 4_500_000;
+const MAX_INPUT_CHARS = 120_000;
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+
+/** Valida as imagens recebidas (tipo, base64, quantidade e tamanho). Devolve a mensagem de erro, se houver. */
+function imagesProblem(images: RequestBody["images"]): string | null {
+  if (!Array.isArray(images) || images.length === 0) return "Nenhuma imagem enviada.";
+  if (images.length > MAX_IMAGES) return `No máximo ${MAX_IMAGES} imagens por análise.`;
+  let total = 0;
+  for (const img of images) {
+    if (!img || !ALLOWED_IMAGE_TYPES.includes(img.media_type)) return "Tipo de imagem não suportado.";
+    if (typeof img.data !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(img.data)) return "Imagem inválida.";
+    total += img.data.length;
+  }
+  return total > MAX_IMAGES_CHARS ? "As imagens são grandes demais." : null;
+}
+
+const TRANSCRIBE_SYSTEM = `Você lê imagens de documentos e diagramas que descrevem um processo de trabalho (fluxogramas, quadros brancos, formulários, páginas escaneadas de procedimentos) e transcreve o que está mostrado.
+
+Regras:
+- Transcreva fielmente: o título do processo, os responsáveis/setores, cada atividade na ordem do fluxo, as decisões (com a pergunta e o destino de cada resposta), os retornos/retrabalhos, prazos e observações escritas.
+- Escreva em português, em texto simples: uma linha "Processo: <título>", uma linha "Responsáveis: ...", e depois as etapas numeradas, uma por linha, dizendo quem executa. Decisões e desvios no formato "Se <condição>: vai para o passo N".
+- NÃO invente etapas, responsáveis ou informações que não estejam visíveis. Trechos ilegíveis: escreva [ilegível].
+- Se as imagens não mostrarem um processo, diga isso em uma frase.
+- Responda SOMENTE chamando a ferramenta com o campo solicitado.`;
 
 interface RawGraph {
   process_name: string;
@@ -241,7 +277,7 @@ function summarizeUsage(entries: UsageEntry[]) {
 async function callClaudeSingleField<T>(
   opts: CallOptions,
   system: string,
-  userContent: string,
+  userContent: string | ContentBlock[],
   toolName: string,
   fieldName: string,
   fieldSchema: Record<string, unknown>,
@@ -279,7 +315,7 @@ async function callClaudeSingleFieldOnce<T>(
   model: string,
   attempt: number,
   system: string,
-  userContent: string,
+  userContent: string | ContentBlock[],
   toolName: string,
   fieldName: string,
   fieldSchema: Record<string, unknown>
@@ -366,11 +402,46 @@ Deno.serve(async (req: Request) => {
   try {
     const body: RequestBody = await req.json();
 
-    if (!body.input || !body.inputType) {
-      return new Response(JSON.stringify({ error: "Campos 'input' e 'inputType' são obrigatórios." }), {
+    const badRequest = (message: string) =>
+      new Response(JSON.stringify({ error: message }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+
+    if (body.mode === "transcribe") {
+      const problem = imagesProblem(body.images);
+      if (problem) return badRequest(problem);
+      const description = await callClaudeSingleField<string>(
+        { step: "transcribe_images", models: [SONNET], usage },
+        TRANSCRIBE_SYSTEM,
+        [
+          ...body.images!.map(
+            (img): ContentBlock => ({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } })
+          ),
+          { type: "text", text: "Transcreva o processo mostrado nesta(s) imagem(ns)." },
+        ],
+        "submit_transcription",
+        "description",
+        { type: "string" },
+        (v) => typeof v === "string" && v.trim().length > 20
+      );
+      const transcribeUsage = summarizeUsage(usage);
+      console.log(JSON.stringify({ event: "transcribe_usage", ...transcribeUsage }));
+      return new Response(JSON.stringify({ text: description, usage: transcribeUsage }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!body.input || !body.inputType) return badRequest("Campos 'input' e 'inputType' são obrigatórios.");
+    if (body.input.length > MAX_INPUT_CHARS) return badRequest("O texto do processo é longo demais.");
+
+    let importedAsIs: RawGraph | undefined;
+    if (body.asIsGraph !== undefined) {
+      const candidate = normalizeRawGraph(body.input)(body.asIsGraph as RawGraph);
+      if (!isValidRawGraph(candidate) || candidate.elements.length < 2 || candidate.elements.length > 150) {
+        return badRequest("O diagrama BPMN importado é inválido ou grande demais.");
+      }
+      importedAsIs = candidate;
     }
 
     const contextLines = [
@@ -388,7 +459,7 @@ Deno.serve(async (req: Request) => {
 
 
     // 1) Modelar o as-is
-    const asIsRaw = await callClaudeSingleField<RawGraph>(
+    const asIsRaw: RawGraph = importedAsIs ?? (await callClaudeSingleField<RawGraph>(
       { step: "as_is_graph", models: GRAPH_MODELS, usage },
       `${baseSystem}
 
@@ -406,7 +477,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       graphSchema,
       isValidRawGraph,
       normalizeRawGraph(body.inputType === "process_name" ? body.input : "Processo")
-    );
+    ));
 
     if (!isValidRawGraph(asIsRaw)) {
       return new Response(JSON.stringify({ error: "A IA retornou uma modelagem as-is incompleta." }), {

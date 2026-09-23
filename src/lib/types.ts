@@ -50,9 +50,20 @@ export interface ProcessAnalysisResult {
   };
 }
 
+export interface ImageInput {
+  media_type: string;
+  /** base64 sem o prefixo "data:" */
+  data: string;
+}
+
 export interface AnalyzeProcessRequest {
+  /** "transcribe" só lê as imagens e devolve o texto do processo; "analyze" (padrão) faz a análise completa. */
+  mode?: "analyze" | "transcribe";
   inputType: "process_name" | "activities_list";
   input: string;
+  images?: ImageInput[];
+  /** Processo atual já modelado (vindo de um arquivo BPMN importado): dispensa a modelagem do as-is. */
+  asIsGraph?: BpmnGraphResult;
   department?: string;
   actors?: string;
   constraintsNotes?: string;

@@ -1,10 +1,13 @@
 import { useState } from "react";
 import type { StartTab } from "./StartStep";
+import type { BpmnGraphResult, ImageInput } from "../../lib/types";
 
 interface Props {
   tab: StartTab;
   initialProcessName: string;
   initialText: string;
+  images?: ImageInput[];
+  bpmnGraph?: BpmnGraphResult;
   loading: boolean;
   error: string | null;
   onBack: () => void;
@@ -17,14 +20,29 @@ interface Props {
   }) => void;
 }
 
-export function ReviewStep({ tab, initialProcessName, initialText, loading, error, onBack, onContinue }: Props) {
+export function ReviewStep({
+  tab,
+  initialProcessName,
+  initialText,
+  images = [],
+  bpmnGraph,
+  loading,
+  error,
+  onBack,
+  onContinue,
+}: Props) {
   const [processName, setProcessName] = useState(initialProcessName);
   const [text, setText] = useState(initialText);
   const [department, setDepartment] = useState("");
   const [actors, setActors] = useState("");
   const [constraintsNotes, setConstraintsNotes] = useState("");
 
-  const canContinue = tab === "process_name" ? processName.trim().length > 0 : text.trim().length > 0;
+  const canContinue = bpmnGraph
+    ? true
+    : tab === "process_name"
+      ? processName.trim().length > 0
+      : text.trim().length > 0;
+  const stepCount = bpmnGraph?.elements.filter((e) => ["task", "userTask", "serviceTask"].includes(e.type)).length ?? 0;
 
   return (
     <div className="review-step">
@@ -35,16 +53,36 @@ export function ReviewStep({ tab, initialProcessName, initialText, loading, erro
       </p>
 
       <div className="review-card">
-        {tab === "process_name" ? (
+        {bpmnGraph ? (
+          <div className="review-bpmn">
+            <strong>{bpmnGraph.process_name}</strong>
+            <span>
+              Diagrama BPMN importado: {stepCount} atividades, {bpmnGraph.lanes.length} raias e{" "}
+              {bpmnGraph.flows.length} fluxos. Ele será usado como o processo atual (as-is), e a IA vai diagnosticar e
+              propor a versão simplificada.
+            </span>
+          </div>
+        ) : tab === "process_name" ? (
           <label className="review-field">
             Nome do processo
             <input type="text" value={processName} onChange={(e) => setProcessName(e.target.value)} />
           </label>
         ) : (
-          <label className="review-field">
-            {tab === "pdf" ? "Texto extraído do PDF" : tab === "xlsx" ? "Texto extraído da planilha" : "Texto informado"}
-            <textarea rows={10} value={text} onChange={(e) => setText(e.target.value)} />
-          </label>
+          <>
+            {images.length > 0 && (
+              <div className="review-images">
+                {images.map((img, i) => (
+                  <img key={i} src={`data:${img.media_type};base64,${img.data}`} alt={`Imagem ${i + 1} enviada`} />
+                ))}
+              </div>
+            )}
+            <label className="review-field">
+              {tab === "file"
+                ? "Texto do processo lido dos arquivos (confira e corrija se preciso)"
+                : "Texto informado"}
+              <textarea rows={10} value={text} onChange={(e) => setText(e.target.value)} />
+            </label>
+          </>
         )}
 
         <div className="review-context-grid">

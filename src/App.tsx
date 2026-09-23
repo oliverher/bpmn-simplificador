@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { Header } from "./components/Header";
 import { Stepper } from "./components/Stepper";
-import { StartStep, type StartTab } from "./components/steps/StartStep";
+import { StartStep, type StartData } from "./components/steps/StartStep";
 import { ReviewStep } from "./components/steps/ReviewStep";
 import { DiagnosisStep } from "./components/steps/DiagnosisStep";
 import { SimplifyStep } from "./components/steps/SimplifyStep";
@@ -11,10 +11,18 @@ import { DeliverStep } from "./components/steps/DeliverStep";
 import type { AnalyzeProcessRequest, ProcessAnalysisResult } from "./lib/types";
 import "./App.css";
 
-interface StartData {
-  tab: StartTab;
-  processName: string;
-  extractedText: string;
+/** Mostra a mensagem real devolvida pela função, em vez do texto genérico do supabase-js. */
+async function functionErrorMessage(error: unknown): Promise<string> {
+  const context = (error as { context?: Response })?.context;
+  if (context && typeof context.json === "function") {
+    try {
+      const body = await context.json();
+      if (body?.error) return String(body.error);
+    } catch {
+      /* usa a mensagem padrão abaixo */
+    }
+  }
+  return (error as Error)?.message ?? "Falha ao analisar o processo. Tente novamente.";
 }
 
 function App() {
@@ -24,6 +32,8 @@ function App() {
   const [result, setResult] = useState<ProcessAnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     async function ensureSession() {
@@ -39,9 +49,29 @@ function App() {
     ensureSession();
   }, []);
 
-  function handleStartContinue(data: StartData) {
+  async function handleStartContinue(data: StartData) {
     setStartData(data);
+    setError(null);
+    setNotice(null);
     setStep(2);
+    if (data.images.length === 0) return;
+
+    // Imagens e PDFs escaneados: a IA transcreve o processo antes da conferência.
+    setTranscribing(true);
+    const { data: response, error: invokeError } = await supabase.functions.invoke<{ text: string }>("analyze-process", {
+      body: { mode: "transcribe", inputType: "activities_list", input: "imagem", images: data.images },
+    });
+    setTranscribing(false);
+    if (invokeError || !response?.text) {
+      setNotice(
+        `Não consegui ler as imagens automaticamente: ${await functionErrorMessage(invokeError ?? new Error("resposta vazia"))}. Você pode descrever o processo no campo de texto abaixo.`
+      );
+      return;
+    }
+    setStartData({
+      ...data,
+      extractedText: [data.extractedText, response.text].filter(Boolean).join("\n\n"),
+    });
   }
 
   async function handleReviewContinue(data: {
@@ -57,7 +87,12 @@ function App() {
 
     const request: AnalyzeProcessRequest = {
       inputType: startData.tab === "process_name" ? "process_name" : "activities_list",
-      input: startData.tab === "process_name" ? data.processName : data.text,
+      input: startData.bpmnGraph
+        ? startData.bpmnGraph.process_name
+        : startData.tab === "process_name"
+          ? data.processName
+          : data.text,
+      asIsGraph: startData.bpmnGraph,
       department: data.department.trim() || undefined,
       actors: data.actors.trim() || undefined,
       constraintsNotes: data.constraintsNotes.trim() || undefined,
@@ -71,7 +106,7 @@ function App() {
     setLoading(false);
 
     if (invokeError || !response) {
-      setError(invokeError?.message ?? "Falha ao analisar o processo. Tente novamente.");
+      setError(await functionErrorMessage(invokeError ?? new Error("Falha ao analisar o processo. Tente novamente.")));
       return;
     }
 
@@ -84,6 +119,7 @@ function App() {
     setStartData(null);
     setResult(null);
     setError(null);
+    setNotice(null);
   }
 
   if (!sessionReady) {
@@ -98,13 +134,23 @@ function App() {
       <main className="wizard-main">
         {step === 1 && <StartStep onContinue={handleStartContinue} />}
 
-        {step === 2 && startData && (
+        {step === 2 && startData && transcribing && (
+          <div className="transcribing">
+            <h2 className="step-title">Lendo o arquivo com IA...</h2>
+            <p className="step-subtitle">A IA está transcrevendo o processo da imagem. Isso leva alguns segundos.</p>
+          </div>
+        )}
+
+        {step === 2 && startData && !transcribing && (
           <ReviewStep
+            key={startData.extractedText.length}
             tab={startData.tab}
             initialProcessName={startData.processName}
             initialText={startData.extractedText}
+            images={startData.images}
+            bpmnGraph={startData.bpmnGraph}
             loading={loading}
-            error={error}
+            error={error ?? notice}
             onBack={() => setStep(1)}
             onContinue={handleReviewContinue}
           />
