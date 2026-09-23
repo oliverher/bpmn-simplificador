@@ -62,15 +62,15 @@ const asIsToolSchema = {
   input_schema: {
     type: "object",
     properties: {
-      as_is: graphSchema,
       summary: { type: "string", description: "Resumo executivo do processo e do diagnóstico, em português." },
       issues_found: {
         type: "array",
         items: { type: "string" },
         description: "Problemas identificados no as-is (redundâncias, retrabalho, handoffs desnecessários, gargalos, aprovações redundantes).",
       },
+      as_is: graphSchema,
     },
-    required: ["as_is", "summary", "issues_found"],
+    required: ["summary", "issues_found", "as_is"],
   },
 };
 
@@ -80,14 +80,14 @@ const toBeToolSchema = {
   input_schema: {
     type: "object",
     properties: {
-      to_be: graphSchema,
       recommendations: {
         type: "array",
         items: { type: "string" },
         description: "Melhorias aplicadas no to-be, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar).",
       },
+      to_be: graphSchema,
     },
-    required: ["to_be", "recommendations"],
+    required: ["recommendations", "to_be"],
   },
 };
 
@@ -176,7 +176,7 @@ async function callClaudeTool(system: string, userContent: string, tool: Record<
   if (!toolUse) {
     throw new Error("A IA não retornou dados estruturados válidos.");
   }
-  return toolUse.input;
+  return { input: toolUse.input, stopReason: data.stop_reason as string };
 }
 
 function isValidRawGraph(graph: unknown): graph is RawGraph {
@@ -225,8 +225,11 @@ Deno.serve(async (req: Request) => {
       .join("\n");
 
     let asIsResult: { as_is: RawGraph; summary: string; issues_found: string[] };
+    let asIsStopReason: string;
     try {
-      asIsResult = await callClaudeTool(AS_IS_SYSTEM_PROMPT, contextLines, asIsToolSchema);
+      const { input, stopReason } = await callClaudeTool(AS_IS_SYSTEM_PROMPT, contextLines, asIsToolSchema);
+      asIsResult = input;
+      asIsStopReason = stopReason;
     } catch (err) {
       return new Response(JSON.stringify({ error: (err as Error).message }), {
         status: 502,
@@ -236,7 +239,11 @@ Deno.serve(async (req: Request) => {
 
     if (!isValidRawGraph(asIsResult?.as_is) || !Array.isArray(asIsResult?.issues_found) || !asIsResult?.summary) {
       return new Response(
-        JSON.stringify({ error: "A IA não retornou a modelagem as-is.", debug_keys: Object.keys(asIsResult ?? {}) }),
+        JSON.stringify({
+          error: "A IA não retornou a modelagem as-is.",
+          debug_keys: Object.keys(asIsResult ?? {}),
+          debug_stop_reason: asIsStopReason,
+        }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -246,8 +253,11 @@ Deno.serve(async (req: Request) => {
     )}\n\nProblemas já identificados no as-is:\n${asIsResult.issues_found.map((i) => `- ${i}`).join("\n")}`;
 
     let toBeResult: { to_be: RawGraph; recommendations: string[] };
+    let toBeStopReason: string;
     try {
-      toBeResult = await callClaudeTool(TO_BE_SYSTEM_PROMPT, toBeUserContent, toBeToolSchema);
+      const { input, stopReason } = await callClaudeTool(TO_BE_SYSTEM_PROMPT, toBeUserContent, toBeToolSchema);
+      toBeResult = input;
+      toBeStopReason = stopReason;
     } catch (err) {
       return new Response(JSON.stringify({ error: (err as Error).message }), {
         status: 502,
@@ -257,7 +267,11 @@ Deno.serve(async (req: Request) => {
 
     if (!isValidRawGraph(toBeResult?.to_be) || !Array.isArray(toBeResult?.recommendations)) {
       return new Response(
-        JSON.stringify({ error: "A IA não retornou a modelagem to-be.", debug_keys: Object.keys(toBeResult ?? {}) }),
+        JSON.stringify({
+          error: "A IA não retornou a modelagem to-be.",
+          debug_keys: Object.keys(toBeResult ?? {}),
+          debug_stop_reason: toBeStopReason,
+        }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
