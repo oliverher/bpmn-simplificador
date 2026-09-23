@@ -12,8 +12,10 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
     "bpmn-js": "^18.29.1",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

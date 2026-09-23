@@ -1,18 +1,20 @@
-import type { ProcessAnalysisResult } from "../lib/types";
-import { BpmnViewer } from "./BpmnViewer";
+import type { ProcessAnalysisResult } from "../../lib/types";
+import { BpmnViewer } from "../BpmnViewer";
 
 interface Props {
   result: ProcessAnalysisResult;
+  onBack: () => void;
+  onContinue: () => void;
 }
 
-export function ProcessResult({ result }: Props) {
+export function CompareStep({ result, onBack, onContinue }: Props) {
   const { metrics } = result;
   const stepsReduction = metrics.steps_before - metrics.steps_after;
   const handoffsReduction = metrics.handoffs_before - metrics.handoffs_after;
 
   return (
-    <div className="process-result">
-      <h2>{result.processName}</h2>
+    <div className="compare-step">
+      <h2 className="step-title">Revisão: antes e depois</h2>
 
       <div className="metrics-row">
         <MetricCard label="Etapas" before={metrics.steps_before} after={metrics.steps_after} reduction={stepsReduction} />
@@ -24,30 +26,6 @@ export function ProcessResult({ result }: Props) {
         />
       </div>
 
-      <div className="analysis-block">
-        <h3>Resumo da análise</h3>
-        <p>{result.analysis.summary}</p>
-
-        <div className="analysis-columns">
-          <div>
-            <h4>Problemas identificados (as-is)</h4>
-            <ul>
-              {result.analysis.issues_found.map((issue, i) => (
-                <li key={i}>{issue}</li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <h4>Melhorias aplicadas (to-be)</h4>
-            <ul>
-              {result.analysis.recommendations.map((rec, i) => (
-                <li key={i}>{rec}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-
       <div className="diagrams-row">
         <div className="diagram-column">
           <h3>As-Is (atual)</h3>
@@ -57,6 +35,15 @@ export function ProcessResult({ result }: Props) {
           <h3>To-Be (simplificado)</h3>
           <BpmnViewer xml={result.toBe.xml} title={`${result.processName}-to-be`} />
         </div>
+      </div>
+
+      <div className="step-nav">
+        <button type="button" className="back-button" onClick={onBack}>
+          ← Voltar
+        </button>
+        <button type="button" className="continue-button" onClick={onContinue}>
+          Continuar →
+        </button>
       </div>
     </div>
   );
