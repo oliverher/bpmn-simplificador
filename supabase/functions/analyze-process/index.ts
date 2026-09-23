@@ -1,4 +1,4 @@
-import { buildBpmnXml, type BpmnGraph } from "../_shared/bpmn-builder.ts";
+import { buildBpmnXml, computeGraphMetrics, type BpmnGraph } from "../_shared/bpmn-builder.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const ANTHROPIC_MODEL = "claude-sonnet-5";
@@ -56,70 +56,68 @@ const graphSchema = {
   required: ["process_name", "lanes", "elements", "flows"],
 };
 
-const toolSchema = {
-  name: "submit_process_analysis",
-  description:
-    "Envia a modelagem BPMN do processo 'as-is' (como está) e 'to-be' (simplificado), junto da análise e das métricas de melhoria.",
+const asIsToolSchema = {
+  name: "submit_as_is",
+  description: "Envia a modelagem BPMN do processo 'as-is' (como está hoje) e o diagnóstico dos problemas encontrados.",
   input_schema: {
     type: "object",
     properties: {
       as_is: graphSchema,
-      to_be: graphSchema,
-      analysis: {
-        type: "object",
-        properties: {
-          summary: { type: "string", description: "Resumo executivo da análise, em português." },
-          issues_found: {
-            type: "array",
-            items: { type: "string" },
-            description: "Problemas identificados no processo as-is (redundâncias, retrabalho, handoffs desnecessários, gargalos).",
-          },
-          recommendations: {
-            type: "array",
-            items: { type: "string" },
-            description: "Recomendações aplicadas no to-be, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar).",
-          },
-        },
-        required: ["summary", "issues_found", "recommendations"],
-      },
-      metrics: {
-        type: "object",
-        properties: {
-          steps_before: { type: "integer" },
-          steps_after: { type: "integer" },
-          handoffs_before: { type: "integer" },
-          handoffs_after: { type: "integer" },
-        },
-        required: ["steps_before", "steps_after", "handoffs_before", "handoffs_after"],
+      summary: { type: "string", description: "Resumo executivo do processo e do diagnóstico, em português." },
+      issues_found: {
+        type: "array",
+        items: { type: "string" },
+        description: "Problemas identificados no as-is (redundâncias, retrabalho, handoffs desnecessários, gargalos, aprovações redundantes).",
       },
     },
-    required: ["as_is", "to_be", "analysis", "metrics"],
+    required: ["as_is", "summary", "issues_found"],
   },
 };
 
-const SYSTEM_PROMPT = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando e simplificando processos organizacionais (inclusive de órgãos públicos).
+const toBeToolSchema = {
+  name: "submit_to_be",
+  description: "Envia a modelagem BPMN do processo 'to-be' (simplificado) e as melhorias aplicadas.",
+  input_schema: {
+    type: "object",
+    properties: {
+      to_be: graphSchema,
+      recommendations: {
+        type: "array",
+        items: { type: "string" },
+        description: "Melhorias aplicadas no to-be, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar).",
+      },
+    },
+    required: ["to_be", "recommendations"],
+  },
+};
 
-Sua tarefa: a partir do que o usuário fornecer (nome de um processo, OU uma lista de atividades), você deve:
-
-1. Modelar o processo "as-is":
-   - Se o usuário deu uma LISTA DE ATIVIDADES, organize-as na sequência lógica mais provável, identificando atores/raias, decisões (gateways) e o fluxo completo.
-   - Se o usuário deu apenas um NOME DE PROCESSO, proponha um fluxo "as-is" realista e comum para esse tipo de processo, baseado em boas práticas e no contexto informado (departamento, atores, restrições).
-   - Sempre inclua ao menos um evento de início e um de fim, atores em raias (lanes) coerentes, e gateways explícitos para decisões.
-
-2. Analisar criticamente o as-is: identifique redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes e etapas que não agregam valor.
-
-3. Propor o "to-be": uma versão simplificada aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), reduzindo etapas e handoffs sempre que possível, SEM remover controles/aprovações que sejam obrigatórios por lei ou compliance (quando aplicável, mantenha-os mas explique a decisão).
-
-4. Calcular métricas simples: número de etapas (elements do tipo task/userTask/serviceTask) e número de handoffs (transições de raia) antes e depois.
-
-Regras de modelagem BPMN:
+const MODELING_RULES = `Regras de modelagem BPMN:
 - IDs devem ser únicos, curtos, sem espaços/acentos (ex: "start1", "task_analise", "gw_aprovado").
 - Todo elemento deve pertencer a uma lane existente.
 - Todo flow deve referenciar ids de elementos existentes.
 - Gateways exclusivos com múltiplas saídas devem nomear cada flow de saída (ex: "Sim"/"Não", "Aprovado"/"Reprovado").
-- Nomes de elementos e raias em português, claros e curtos.
+- Nomes de elementos e raias em português, claros e curtos.`;
 
-Responda SOMENTE chamando a ferramenta "submit_process_analysis" com os dados estruturados. Não escreva texto fora da chamada de ferramenta.`;
+const AS_IS_SYSTEM_PROMPT = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando processos organizacionais (inclusive de órgãos públicos).
+
+Sua tarefa: a partir do que o usuário fornecer (nome de um processo, OU uma lista de atividades), modele o processo "as-is" (como está hoje) e diagnostique seus problemas.
+
+- Se o usuário deu uma LISTA DE ATIVIDADES, organize-as na sequência lógica mais provável, identificando atores/raias, decisões (gateways) e o fluxo completo.
+- Se o usuário deu apenas um NOME DE PROCESSO, proponha um fluxo "as-is" realista e comum para esse tipo de processo, baseado em boas práticas e no contexto informado (departamento, atores, restrições).
+- Sempre inclua ao menos um evento de início e um de fim, atores em raias (lanes) coerentes, e gateways explícitos para decisões.
+- Identifique redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes e etapas que não agregam valor.
+
+${MODELING_RULES}
+
+Responda SOMENTE chamando a ferramenta "submit_as_is" com os dados estruturados. Não escreva texto fora da chamada de ferramenta.`;
+
+const TO_BE_SYSTEM_PROMPT = `Você é um especialista sênior em BPM (Business Process Management), com décadas de experiência simplificando processos organizacionais (inclusive de órgãos públicos).
+
+Você receberá a modelagem BPMN "as-is" (como está hoje) de um processo e o diagnóstico dos problemas encontrados. Sua tarefa é propor a versão "to-be": uma versão simplificada aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), reduzindo etapas e handoffs sempre que possível, SEM remover controles/aprovações que sejam obrigatórios por lei ou compliance (quando aplicável, mantenha-os mas explique a decisão na recomendação).
+
+${MODELING_RULES}
+
+Responda SOMENTE chamando a ferramenta "submit_to_be" com os dados estruturados. Não escreva texto fora da chamada de ferramenta.`;
 
 interface RequestBody {
   inputType: "process_name" | "activities_list";
@@ -129,12 +127,14 @@ interface RequestBody {
   constraintsNotes?: string;
 }
 
-function toBpmnGraph(raw: {
+interface RawGraph {
   process_name: string;
   lanes: { id: string; name: string }[];
   elements: { id: string; type: string; name: string; lane: string }[];
   flows: { id: string; source: string; target: string; name?: string }[];
-}): BpmnGraph {
+}
+
+function toBpmnGraph(raw: RawGraph): BpmnGraph {
   return {
     processName: raw.process_name,
     lanes: raw.lanes,
@@ -146,6 +146,44 @@ function toBpmnGraph(raw: {
     })),
     flows: raw.flows,
   };
+}
+
+async function callClaudeTool(system: string, userContent: string, tool: Record<string, unknown>) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 8000,
+      system,
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
+      messages: [{ role: "user", content: userContent }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Falha na chamada à Claude API: ${errText}`);
+  }
+
+  const data = await response.json();
+  const toolUse = data.content?.find((c: { type: string }) => c.type === "tool_use");
+  if (!toolUse) {
+    throw new Error("A IA não retornou dados estruturados válidos.");
+  }
+  return toolUse.input;
+}
+
+function graphSummaryText(graph: RawGraph): string {
+  const lanesText = graph.lanes.map((l) => `${l.id} (${l.name})`).join(", ");
+  const elementsText = graph.elements.map((e) => `${e.id} [${e.type}] "${e.name}" (lane: ${e.lane})`).join("\n");
+  const flowsText = graph.flows.map((f) => `${f.source} -> ${f.target}${f.name ? ` (${f.name})` : ""}`).join("\n");
+  return `Processo: ${graph.process_name}\n\nRaias: ${lanesText}\n\nElementos:\n${elementsText}\n\nFluxos:\n${flowsText}`;
 }
 
 Deno.serve(async (req: Request) => {
@@ -181,69 +219,67 @@ Deno.serve(async (req: Request) => {
       .filter(Boolean)
       .join("\n");
 
-    const anthropicResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 16000,
-        system: SYSTEM_PROMPT,
-        tools: [toolSchema],
-        tool_choice: { type: "tool", name: "submit_process_analysis" },
-        messages: [{ role: "user", content: contextLines }],
-      }),
-    });
-
-    if (!anthropicResponse.ok) {
-      const errText = await anthropicResponse.text();
-      return new Response(JSON.stringify({ error: `Falha na chamada à Claude API: ${errText}` }), {
+    let asIsResult: { as_is: RawGraph; summary: string; issues_found: string[] };
+    try {
+      asIsResult = await callClaudeTool(AS_IS_SYSTEM_PROMPT, contextLines, asIsToolSchema);
+    } catch (err) {
+      return new Response(JSON.stringify({ error: (err as Error).message }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const anthropicData = await anthropicResponse.json();
-    const toolUse = anthropicData.content?.find((c: { type: string }) => c.type === "tool_use");
-
-    if (!toolUse) {
-      return new Response(JSON.stringify({ error: "A IA não retornou dados estruturados válidos." }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const result = toolUse.input as {
-      as_is: Parameters<typeof toBpmnGraph>[0];
-      to_be: Parameters<typeof toBpmnGraph>[0];
-      analysis: { summary: string; issues_found: string[]; recommendations: string[] };
-      metrics: { steps_before: number; steps_after: number; handoffs_before: number; handoffs_after: number };
-    };
-
-    if (!result?.as_is || !result?.to_be) {
+    if (!asIsResult?.as_is) {
       return new Response(
-        JSON.stringify({
-          error: "Formato inesperado retornado pela IA.",
-          debug_tool_input_keys: Object.keys(toolUse.input ?? {}),
-          debug_stop_reason: anthropicData.stop_reason,
-        }),
+        JSON.stringify({ error: "A IA não retornou a modelagem as-is.", debug_keys: Object.keys(asIsResult ?? {}) }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const asIsXml = buildBpmnXml(toBpmnGraph(result.as_is));
-    const toBeXml = buildBpmnXml(toBpmnGraph(result.to_be));
+    const toBeUserContent = `Contexto original informado pelo usuário:\n${contextLines}\n\nModelagem as-is já feita:\n${graphSummaryText(
+      asIsResult.as_is
+    )}\n\nProblemas já identificados no as-is:\n${asIsResult.issues_found.map((i) => `- ${i}`).join("\n")}`;
+
+    let toBeResult: { to_be: RawGraph; recommendations: string[] };
+    try {
+      toBeResult = await callClaudeTool(TO_BE_SYSTEM_PROMPT, toBeUserContent, toBeToolSchema);
+    } catch (err) {
+      return new Response(JSON.stringify({ error: (err as Error).message }), {
+        status: 502,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!toBeResult?.to_be) {
+      return new Response(
+        JSON.stringify({ error: "A IA não retornou a modelagem to-be.", debug_keys: Object.keys(toBeResult ?? {}) }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const asIsGraph = toBpmnGraph(asIsResult.as_is);
+    const toBeGraph = toBpmnGraph(toBeResult.to_be);
+    const asIsXml = buildBpmnXml(asIsGraph);
+    const toBeXml = buildBpmnXml(toBeGraph);
+    const asIsMetrics = computeGraphMetrics(asIsGraph);
+    const toBeMetrics = computeGraphMetrics(toBeGraph);
 
     return new Response(
       JSON.stringify({
-        processName: result.as_is.process_name,
-        asIs: { xml: asIsXml, graph: result.as_is },
-        toBe: { xml: toBeXml, graph: result.to_be },
-        analysis: result.analysis,
-        metrics: result.metrics,
+        processName: asIsResult.as_is.process_name,
+        asIs: { xml: asIsXml, graph: asIsResult.as_is },
+        toBe: { xml: toBeXml, graph: toBeResult.to_be },
+        analysis: {
+          summary: asIsResult.summary,
+          issues_found: asIsResult.issues_found,
+          recommendations: toBeResult.recommendations,
+        },
+        metrics: {
+          steps_before: asIsMetrics.steps,
+          steps_after: toBeMetrics.steps,
+          handoffs_before: asIsMetrics.handoffs,
+          handoffs_after: toBeMetrics.handoffs,
+        },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

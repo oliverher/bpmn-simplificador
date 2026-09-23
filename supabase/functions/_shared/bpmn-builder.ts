@@ -108,6 +108,19 @@ function computeLevels(elements: BpmnElement[], flows: BpmnFlow[]): Map<string, 
   return levels;
 }
 
+const STEP_TYPES: BpmnElementType[] = ["task", "userTask", "serviceTask"];
+
+export function computeGraphMetrics(graph: BpmnGraph): { steps: number; handoffs: number } {
+  const steps = graph.elements.filter((el) => STEP_TYPES.includes(el.type)).length;
+  const laneOf = new Map(graph.elements.map((el) => [el.id, el.lane]));
+  const handoffs = graph.flows.filter((f) => {
+    const sourceLane = laneOf.get(f.source);
+    const targetLane = laneOf.get(f.target);
+    return sourceLane !== undefined && targetLane !== undefined && sourceLane !== targetLane;
+  }).length;
+  return { steps, handoffs };
+}
+
 export function buildBpmnXml(graph: BpmnGraph): string {
   const processId = "Process_1";
   const collaborationId = "Collaboration_1";
