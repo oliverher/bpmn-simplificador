@@ -68,6 +68,7 @@ export function ReviewStep({ tab, initialProcessName, initialText, loading, erro
         </label>
       </div>
 
+      {loading && <p className="loading-hint">A IA está modelando e analisando o processo. Isso pode levar até 1 minuto.</p>}
       {error && <p className="start-error">{error}</p>}
 
       <div className="step-nav">

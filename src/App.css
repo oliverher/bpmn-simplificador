@@ -418,6 +418,12 @@ button {
   margin: 0;
 }
 
+.loading-hint {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: 0.8rem;
+}
+
 .start-error {
   color: #b91c1c;
   font-size: 0.85rem;
