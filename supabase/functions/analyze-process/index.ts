@@ -1,7 +1,12 @@
 import { buildBpmnXml, computeGraphMetrics, sanitizeGraph, type BpmnGraph } from "../_shared/bpmn-builder.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const ANTHROPIC_MODEL = "claude-sonnet-5";
+const SONNET = "claude-sonnet-5";
+// Os dois grafos BPMN são a parte crítica (e a que mais gasta tokens): ficam no modelo mais capaz.
+const GRAPH_MODELS = [SONNET];
+// Resumo, problemas e melhorias são textos curtos: esforço de raciocínio baixo.
+const TEXT_MODELS = [SONNET];
+const TEXT_EFFORT: Effort | undefined = undefined;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -116,11 +121,62 @@ class AiFieldError extends Error {
   }
 }
 
+type Effort = "low" | "medium" | "high";
+
+interface UsageEntry {
+  step: string;
+  model: string;
+  attempt: number;
+  input_tokens: number;
+  output_tokens: number;
+  ok: boolean;
+}
+
+/** Como uma chamada deve ser feita: qual modelo em cada tentativa (o último se repete) e, para os
+ *  modelos que suportam, o esforço de raciocínio (o Haiku 4.5 rejeita `effort`). */
+interface CallOptions {
+  step: string;
+  models: string[];
+  effort?: Effort;
+  usage: UsageEntry[];
+}
+
+// US$ por milhão de tokens (tabela de referência da Anthropic, 2026-06-24). Usado só para estimar custo.
+const PRICE_PER_MTOK: Record<string, { input: number; output: number }> = {
+  "claude-sonnet-5": { input: 2, output: 10 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
+};
+
+function summarizeUsage(entries: UsageEntry[]) {
+  const cost = (e: UsageEntry) => {
+    const p = PRICE_PER_MTOK[e.model] ?? PRICE_PER_MTOK["claude-sonnet-5"];
+    return (e.input_tokens * p.input + e.output_tokens * p.output) / 1_000_000;
+  };
+  const byStep: Record<string, { model: string; attempts: number; input_tokens: number; output_tokens: number; cost_usd: number }> = {};
+  for (const e of entries) {
+    const s = (byStep[e.step] ??= { model: e.model, attempts: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 });
+    s.attempts += 1;
+    s.input_tokens += e.input_tokens;
+    s.output_tokens += e.output_tokens;
+    s.cost_usd += cost(e);
+    s.model = e.model;
+  }
+  for (const s of Object.values(byStep)) s.cost_usd = Math.round(s.cost_usd * 1e5) / 1e5;
+  return {
+    calls: entries.length,
+    input_tokens: entries.reduce((a, e) => a + e.input_tokens, 0),
+    output_tokens: entries.reduce((a, e) => a + e.output_tokens, 0),
+    estimated_cost_usd: Math.round(entries.reduce((a, e) => a + cost(e), 0) * 1e5) / 1e5,
+    by_step: byStep,
+  };
+}
+
 /** Chama a Claude API forçando uma tool call com EXATAMENTE uma propriedade obrigatória no topo
  *  (pedir múltiplos campos numa única chamada mostrou-se pouco confiável), e repete até 3 vezes
  *  quando a IA omite o campo ou devolve uma estrutura incompleta — uma falha intermitente e não
  *  determinística do modelo, não algo que reformular o prompt sozinho elimina. */
 async function callClaudeSingleField<T>(
+  opts: CallOptions,
   system: string,
   userContent: string,
   toolName: string,
@@ -130,12 +186,14 @@ async function callClaudeSingleField<T>(
 ): Promise<T> {
   let lastError: AiFieldError | undefined;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    const model = opts.models[Math.min(attempt, opts.models.length) - 1];
     try {
-      const value = await callClaudeSingleFieldOnce<T>(system, userContent, toolName, fieldName, fieldSchema);
+      const { value, entry } = await callClaudeSingleFieldOnce<T>(opts, model, attempt, system, userContent, toolName, fieldName, fieldSchema);
       if (!isValid(value)) {
         lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, [fieldName], "invalid_structure");
         continue;
       }
+      entry.ok = true;
       return value;
     } catch (err) {
       if (!(err instanceof AiFieldError)) throw err;
@@ -146,12 +204,15 @@ async function callClaudeSingleField<T>(
 }
 
 async function callClaudeSingleFieldOnce<T>(
+  opts: CallOptions,
+  model: string,
+  attempt: number,
   system: string,
   userContent: string,
   toolName: string,
   fieldName: string,
   fieldSchema: Record<string, unknown>
-): Promise<T> {
+): Promise<{ value: T; entry: UsageEntry }> {
   const tool = {
     name: toolName,
     description: `Envia o campo '${fieldName}' solicitado.`,
@@ -170,12 +231,13 @@ async function callClaudeSingleFieldOnce<T>(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
+      model,
       max_tokens: 8000,
       system,
       tools: [tool],
       tool_choice: { type: "tool", name: toolName },
       messages: [{ role: "user", content: userContent }],
+      ...(opts.effort && model.startsWith("claude-sonnet") ? { output_config: { effort: opts.effort } } : {}),
     }),
   });
 
@@ -185,6 +247,16 @@ async function callClaudeSingleFieldOnce<T>(
   }
 
   const data = await response.json();
+  const entry: UsageEntry = {
+    step: opts.step,
+    model,
+    attempt,
+    input_tokens: data.usage?.input_tokens ?? 0,
+    output_tokens: data.usage?.output_tokens ?? 0,
+    ok: false,
+  };
+  opts.usage.push(entry);
+
   const toolUse = data.content?.find((c: { type: string }) => c.type === "tool_use");
   if (!toolUse || toolUse.input?.[fieldName] === undefined) {
     throw new AiFieldError(
@@ -193,7 +265,7 @@ async function callClaudeSingleFieldOnce<T>(
       data.stop_reason
     );
   }
-  return toolUse.input[fieldName] as T;
+  return { value: toolUse.input[fieldName] as T, entry };
 }
 
 Deno.serve(async (req: Request) => {
@@ -231,8 +303,11 @@ Deno.serve(async (req: Request) => {
 
     const baseSystem = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando e simplificando processos organizacionais (inclusive de órgãos públicos).`;
 
+    const usage: UsageEntry[] = [];
+
     // 1) Modelar o as-is
     const asIsRaw = await callClaudeSingleField<RawGraph>(
+      { step: "as_is_graph", models: GRAPH_MODELS, usage },
       `${baseSystem}
 
 Modele o processo "as-is" (como está hoje) a partir do que o usuário fornecer (nome de um processo, OU uma lista de atividades).
@@ -262,6 +337,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
     // 2) Diagnosticar o as-is
     const diagnosisUserContent = `Contexto original informado pelo usuário:\n${contextLines}\n\nModelagem as-is:\n${asIsSummaryText}`;
     const summary = await callClaudeSingleField<string>(
+      { step: "summary", models: TEXT_MODELS, effort: TEXT_EFFORT, usage },
       `${baseSystem}\n\nEscreva um resumo executivo (2-4 frases, em português) do processo e do seu principal problema, com base na modelagem as-is fornecida. Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       diagnosisUserContent,
       "submit_summary",
@@ -270,6 +346,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       (v) => typeof v === "string" && v.trim().length > 0
     );
     const issuesFound = await callClaudeSingleField<string[]>(
+      { step: "issues", models: TEXT_MODELS, effort: TEXT_EFFORT, usage },
       `${baseSystem}\n\nIdentifique, em português, os problemas do processo as-is fornecido (redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes, etapas que não agregam valor). Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       diagnosisUserContent,
       "submit_issues",
@@ -284,6 +361,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       .join("\n")}`;
 
     const toBeRaw = await callClaudeSingleField<RawGraph>(
+      { step: "to_be_graph", models: GRAPH_MODELS, usage },
       `${baseSystem}
 
 Proponha a versão "to-be" (simplificada) do processo cuja modelagem as-is e diagnóstico você recebeu, aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), SEM remover controles/aprovações obrigatórios por lei ou compliance.
@@ -308,6 +386,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
 
     // 4) Recomendações do to-be
     const recommendations = await callClaudeSingleField<string[]>(
+      { step: "recommendations", models: TEXT_MODELS, effort: TEXT_EFFORT, usage },
       `${baseSystem}\n\nListe, em português, as melhorias aplicadas na versão to-be em relação ao as-is, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar). Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       `Modelagem as-is:\n${asIsSummaryText}\n\nModelagem to-be:\n${graphSummaryText(toBeRaw)}`,
       "submit_recommendations",
@@ -323,6 +402,9 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
     const asIsMetrics = computeGraphMetrics(asIsGraph);
     const toBeMetrics = computeGraphMetrics(toBeGraph);
 
+    const usageSummary = summarizeUsage(usage);
+    console.log(JSON.stringify({ event: "analysis_usage", ...usageSummary }));
+
     return new Response(
       JSON.stringify({
         processName: asIsRaw.process_name,
@@ -335,6 +417,7 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
           handoffs_before: asIsMetrics.handoffs,
           handoffs_after: toBeMetrics.handoffs,
         },
+        usage: usageSummary,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
