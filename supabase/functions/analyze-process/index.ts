@@ -149,6 +149,7 @@ interface UsageEntry {
   input_tokens: number;
   output_tokens: number;
   ok: boolean;
+  note?: string;
 }
 
 /** Como uma chamada deve ser feita: qual modelo em cada tentativa (o último se repete) e, para os
@@ -171,9 +172,13 @@ function summarizeUsage(entries: UsageEntry[]) {
     const p = PRICE_PER_MTOK[e.model] ?? PRICE_PER_MTOK["claude-sonnet-5"];
     return (e.input_tokens * p.input + e.output_tokens * p.output) / 1_000_000;
   };
-  const byStep: Record<string, { model: string; attempts: number; input_tokens: number; output_tokens: number; cost_usd: number }> = {};
+  const byStep: Record<
+    string,
+    { model: string; attempts: number; input_tokens: number; output_tokens: number; cost_usd: number; retry_notes: string[] }
+  > = {};
   for (const e of entries) {
-    const s = (byStep[e.step] ??= { model: e.model, attempts: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 });
+    const s = (byStep[e.step] ??= { model: e.model, attempts: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, retry_notes: [] });
+    if (e.note) s.retry_notes.push(`tentativa ${e.attempt}: ${e.note}`);
     s.attempts += 1;
     s.input_tokens += e.input_tokens;
     s.output_tokens += e.output_tokens;
@@ -216,6 +221,7 @@ async function callClaudeSingleField<T>(
             ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}:${Array.isArray(v) ? "array" : typeof v}`)
             : [typeof value];
         console.log(JSON.stringify({ event: "invalid_structure", step: opts.step, model, attempt, shape }));
+        entry.note = `estrutura inválida (${shape.join(", ")})`;
         lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, shape, "invalid_structure");
         continue;
       }
@@ -285,6 +291,7 @@ async function callClaudeSingleFieldOnce<T>(
 
   const toolUse = data.content?.find((c: { type: string }) => c.type === "tool_use");
   if (!toolUse || toolUse.input?.[fieldName] === undefined) {
+    entry.note = `campo ausente (chaves: ${Object.keys(toolUse?.input ?? {}).join(", ") || "nenhuma"}; parada: ${data.stop_reason})`;
     throw new AiFieldError(
       `A IA não retornou o campo '${fieldName}'.`,
       Object.keys(toolUse?.input ?? {}),
