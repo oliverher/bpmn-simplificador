@@ -4,8 +4,9 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const SONNET = "claude-sonnet-5";
 // Os dois grafos BPMN são a parte crítica (e a que mais gasta tokens): ficam no modelo mais capaz.
 const GRAPH_MODELS = [SONNET];
-// Resumo, problemas e melhorias são textos curtos: esforço de raciocínio baixo.
-const TEXT_MODELS = [SONNET];
+// Resumo, problemas e melhorias são textos curtos: Haiku 4.5 nas 2 primeiras tentativas (o Haiku não aceita
+// `effort`), Sonnet 5 com esforço baixo se ele falhar.
+const TEXT_MODELS = ["claude-haiku-4-5", "claude-haiku-4-5", SONNET];
 const TEXT_EFFORT: Effort | undefined = "low";
 
 const corsHeaders = {
@@ -221,7 +222,7 @@ async function callClaudeSingleField<T>(
             ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}:${Array.isArray(v) ? "array" : typeof v}`)
             : [typeof value];
         console.log(JSON.stringify({ event: "invalid_structure", step: opts.step, model, attempt, shape }));
-        entry.note = `estrutura inválida (${shape.join(", ")})`;
+        entry.note = [entry.note, `estrutura inválida (${shape.join(", ")})`].filter(Boolean).join(" | ");
         lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, shape, "invalid_structure");
         continue;
       }
@@ -303,8 +304,9 @@ async function callClaudeSingleFieldOnce<T>(
   if (typeof value === "string" && (fieldSchema.type === "object" || fieldSchema.type === "array")) {
     try {
       value = JSON.parse(value);
-    } catch {
-      /* mantém o texto; a validação rejeita e a chamada é repetida */
+    } catch (parseError) {
+      const text = value as string;
+      entry.note = `texto JSON inválido (${(parseError as Error).message}; ${text.length} caracteres; início: ${text.slice(0, 100)} | fim: ${text.slice(-100)})`;
     }
   }
   return { value: value as T, entry };
