@@ -56,68 +56,12 @@ const graphSchema = {
   required: ["process_name", "lanes", "elements", "flows"],
 };
 
-const asIsToolSchema = {
-  name: "submit_as_is",
-  description: "Envia a modelagem BPMN do processo 'as-is' (como está hoje) e o diagnóstico dos problemas encontrados.",
-  input_schema: {
-    type: "object",
-    properties: {
-      summary: { type: "string", description: "Resumo executivo do processo e do diagnóstico, em português." },
-      issues_found: {
-        type: "array",
-        items: { type: "string" },
-        description: "Problemas identificados no as-is (redundâncias, retrabalho, handoffs desnecessários, gargalos, aprovações redundantes).",
-      },
-      as_is: graphSchema,
-    },
-    required: ["summary", "issues_found", "as_is"],
-  },
-};
-
-const toBeToolSchema = {
-  name: "submit_to_be",
-  description: "Envia a modelagem BPMN do processo 'to-be' (simplificado) e as melhorias aplicadas.",
-  input_schema: {
-    type: "object",
-    properties: {
-      recommendations: {
-        type: "array",
-        items: { type: "string" },
-        description: "Melhorias aplicadas no to-be, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar).",
-      },
-      to_be: graphSchema,
-    },
-    required: ["recommendations", "to_be"],
-  },
-};
-
 const MODELING_RULES = `Regras de modelagem BPMN:
 - IDs devem ser únicos, curtos, sem espaços/acentos (ex: "start1", "task_analise", "gw_aprovado").
 - Todo elemento deve pertencer a uma lane existente.
 - Todo flow deve referenciar ids de elementos existentes.
 - Gateways exclusivos com múltiplas saídas devem nomear cada flow de saída (ex: "Sim"/"Não", "Aprovado"/"Reprovado").
 - Nomes de elementos e raias em português, claros e curtos.`;
-
-const AS_IS_SYSTEM_PROMPT = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando processos organizacionais (inclusive de órgãos públicos).
-
-Sua tarefa: a partir do que o usuário fornecer (nome de um processo, OU uma lista de atividades), modele o processo "as-is" (como está hoje) e diagnostique seus problemas.
-
-- Se o usuário deu uma LISTA DE ATIVIDADES, organize-as na sequência lógica mais provável, identificando atores/raias, decisões (gateways) e o fluxo completo.
-- Se o usuário deu apenas um NOME DE PROCESSO, proponha um fluxo "as-is" realista e comum para esse tipo de processo, baseado em boas práticas e no contexto informado (departamento, atores, restrições).
-- Sempre inclua ao menos um evento de início e um de fim, atores em raias (lanes) coerentes, e gateways explícitos para decisões.
-- Identifique redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes e etapas que não agregam valor.
-
-${MODELING_RULES}
-
-Responda SOMENTE chamando a ferramenta "submit_as_is" com os dados estruturados. Não escreva texto fora da chamada de ferramenta.`;
-
-const TO_BE_SYSTEM_PROMPT = `Você é um especialista sênior em BPM (Business Process Management), com décadas de experiência simplificando processos organizacionais (inclusive de órgãos públicos).
-
-Você receberá a modelagem BPMN "as-is" (como está hoje) de um processo e o diagnóstico dos problemas encontrados. Sua tarefa é propor a versão "to-be": uma versão simplificada aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), reduzindo etapas e handoffs sempre que possível, SEM remover controles/aprovações que sejam obrigatórios por lei ou compliance (quando aplicável, mantenha-os mas explique a decisão na recomendação).
-
-${MODELING_RULES}
-
-Responda SOMENTE chamando a ferramenta "submit_to_be" com os dados estruturados. Não escreva texto fora da chamada de ferramenta.`;
 
 interface RequestBody {
   inputType: "process_name" | "activities_list";
@@ -148,7 +92,44 @@ function toBpmnGraph(raw: RawGraph): BpmnGraph {
   };
 }
 
-async function callClaudeTool(system: string, userContent: string, tool: Record<string, unknown>) {
+function isValidRawGraph(graph: unknown): graph is RawGraph {
+  const g = graph as RawGraph | undefined;
+  return !!g && typeof g.process_name === "string" && Array.isArray(g.lanes) && Array.isArray(g.elements) && Array.isArray(g.flows);
+}
+
+function graphSummaryText(graph: RawGraph): string {
+  const lanesText = graph.lanes.map((l) => `${l.id} (${l.name})`).join(", ");
+  const elementsText = graph.elements.map((e) => `${e.id} [${e.type}] "${e.name}" (lane: ${e.lane})`).join("\n");
+  const flowsText = graph.flows.map((f) => `${f.source} -> ${f.target}${f.name ? ` (${f.name})` : ""}`).join("\n");
+  return `Processo: ${graph.process_name}\n\nRaias: ${lanesText}\n\nElementos:\n${elementsText}\n\nFluxos:\n${flowsText}`;
+}
+
+class AiFieldError extends Error {
+  constructor(message: string, public debugKeys: string[], public stopReason: string) {
+    super(message);
+  }
+}
+
+/** Chama a Claude API forçando uma tool call com EXATAMENTE uma propriedade obrigatória no topo,
+ *  já que pedir múltiplos campos numa única chamada mostrou-se pouco confiável (o modelo às vezes
+ *  completa a chamada omitindo um dos campos, mesmo marcados como obrigatórios). */
+async function callClaudeSingleField<T>(
+  system: string,
+  userContent: string,
+  toolName: string,
+  fieldName: string,
+  fieldSchema: Record<string, unknown>
+): Promise<T> {
+  const tool = {
+    name: toolName,
+    description: `Envia o campo '${fieldName}' solicitado.`,
+    input_schema: {
+      type: "object",
+      properties: { [fieldName]: fieldSchema },
+      required: [fieldName],
+    },
+  };
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -161,7 +142,7 @@ async function callClaudeTool(system: string, userContent: string, tool: Record<
       max_tokens: 8000,
       system,
       tools: [tool],
-      tool_choice: { type: "tool", name: tool.name },
+      tool_choice: { type: "tool", name: toolName },
       messages: [{ role: "user", content: userContent }],
     }),
   });
@@ -173,22 +154,14 @@ async function callClaudeTool(system: string, userContent: string, tool: Record<
 
   const data = await response.json();
   const toolUse = data.content?.find((c: { type: string }) => c.type === "tool_use");
-  if (!toolUse) {
-    throw new Error("A IA não retornou dados estruturados válidos.");
+  if (!toolUse || toolUse.input?.[fieldName] === undefined) {
+    throw new AiFieldError(
+      `A IA não retornou o campo '${fieldName}'.`,
+      Object.keys(toolUse?.input ?? {}),
+      data.stop_reason
+    );
   }
-  return { input: toolUse.input, stopReason: data.stop_reason as string };
-}
-
-function isValidRawGraph(graph: unknown): graph is RawGraph {
-  const g = graph as RawGraph | undefined;
-  return !!g && typeof g.process_name === "string" && Array.isArray(g.lanes) && Array.isArray(g.elements) && Array.isArray(g.flows);
-}
-
-function graphSummaryText(graph: RawGraph): string {
-  const lanesText = graph.lanes.map((l) => `${l.id} (${l.name})`).join(", ");
-  const elementsText = graph.elements.map((e) => `${e.id} [${e.type}] "${e.name}" (lane: ${e.lane})`).join("\n");
-  const flowsText = graph.flows.map((f) => `${f.source} -> ${f.target}${f.name ? ` (${f.name})` : ""}`).join("\n");
-  return `Processo: ${graph.process_name}\n\nRaias: ${lanesText}\n\nElementos:\n${elementsText}\n\nFluxos:\n${flowsText}`;
+  return toolUse.input[fieldName] as T;
 }
 
 Deno.serve(async (req: Request) => {
@@ -224,60 +197,89 @@ Deno.serve(async (req: Request) => {
       .filter(Boolean)
       .join("\n");
 
-    let asIsResult: { as_is: RawGraph; summary: string; issues_found: string[] };
-    let asIsStopReason: string;
-    try {
-      const { input, stopReason } = await callClaudeTool(AS_IS_SYSTEM_PROMPT, contextLines, asIsToolSchema);
-      asIsResult = input;
-      asIsStopReason = stopReason;
-    } catch (err) {
-      return new Response(JSON.stringify({ error: (err as Error).message }), {
+    const baseSystem = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando e simplificando processos organizacionais (inclusive de órgãos públicos).`;
+
+    // 1) Modelar o as-is
+    const asIsRaw = await callClaudeSingleField<RawGraph>(
+      `${baseSystem}
+
+Modele o processo "as-is" (como está hoje) a partir do que o usuário fornecer (nome de um processo, OU uma lista de atividades).
+- Se o usuário deu uma LISTA DE ATIVIDADES, organize-as na sequência lógica mais provável, identificando atores/raias, decisões (gateways) e o fluxo completo.
+- Se o usuário deu apenas um NOME DE PROCESSO, proponha um fluxo "as-is" realista e comum para esse tipo de processo, baseado em boas práticas e no contexto informado.
+- Sempre inclua ao menos um evento de início e um de fim, atores em raias (lanes) coerentes, e gateways explícitos para decisões.
+
+${MODELING_RULES}
+
+Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
+      contextLines,
+      "submit_as_is_graph",
+      "as_is",
+      graphSchema
+    );
+
+    if (!isValidRawGraph(asIsRaw)) {
+      return new Response(JSON.stringify({ error: "A IA retornou uma modelagem as-is incompleta." }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    if (!isValidRawGraph(asIsResult?.as_is) || !Array.isArray(asIsResult?.issues_found) || !asIsResult?.summary) {
-      return new Response(
-        JSON.stringify({
-          error: "A IA não retornou a modelagem as-is.",
-          debug_keys: Object.keys(asIsResult ?? {}),
-          debug_stop_reason: asIsStopReason,
-        }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    const asIsSummaryText = graphSummaryText(asIsRaw);
 
-    const toBeUserContent = `Contexto original informado pelo usuário:\n${contextLines}\n\nModelagem as-is já feita:\n${graphSummaryText(
-      asIsResult.as_is
-    )}\n\nProblemas já identificados no as-is:\n${asIsResult.issues_found.map((i) => `- ${i}`).join("\n")}`;
+    // 2) Diagnosticar o as-is
+    const diagnosisUserContent = `Contexto original informado pelo usuário:\n${contextLines}\n\nModelagem as-is:\n${asIsSummaryText}`;
+    const summary = await callClaudeSingleField<string>(
+      `${baseSystem}\n\nEscreva um resumo executivo (2-4 frases, em português) do processo e do seu principal problema, com base na modelagem as-is fornecida. Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
+      diagnosisUserContent,
+      "submit_summary",
+      "summary",
+      { type: "string" }
+    );
+    const issuesFound = await callClaudeSingleField<string[]>(
+      `${baseSystem}\n\nIdentifique, em português, os problemas do processo as-is fornecido (redundâncias, retrabalho, handoffs desnecessários entre atores, gargalos, aprovações redundantes, etapas que não agregam valor). Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
+      diagnosisUserContent,
+      "submit_issues",
+      "issues_found",
+      { type: "array", items: { type: "string" } }
+    );
 
-    let toBeResult: { to_be: RawGraph; recommendations: string[] };
-    let toBeStopReason: string;
-    try {
-      const { input, stopReason } = await callClaudeTool(TO_BE_SYSTEM_PROMPT, toBeUserContent, toBeToolSchema);
-      toBeResult = input;
-      toBeStopReason = stopReason;
-    } catch (err) {
-      return new Response(JSON.stringify({ error: (err as Error).message }), {
+    // 3) Modelar o to-be
+    const toBeUserContent = `Contexto original informado pelo usuário:\n${contextLines}\n\nModelagem as-is:\n${asIsSummaryText}\n\nProblemas identificados no as-is:\n${issuesFound
+      .map((i) => `- ${i}`)
+      .join("\n")}`;
+
+    const toBeRaw = await callClaudeSingleField<RawGraph>(
+      `${baseSystem}
+
+Proponha a versão "to-be" (simplificada) do processo cuja modelagem as-is e diagnóstico você recebeu, aplicando os princípios ECRS (Eliminar, Combinar, Reorganizar, Simplificar), reduzindo etapas e handoffs sempre que possível, SEM remover controles/aprovações obrigatórios por lei ou compliance.
+
+${MODELING_RULES}
+
+Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
+      toBeUserContent,
+      "submit_to_be_graph",
+      "to_be",
+      graphSchema
+    );
+
+    if (!isValidRawGraph(toBeRaw)) {
+      return new Response(JSON.stringify({ error: "A IA retornou uma modelagem to-be incompleta." }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    if (!isValidRawGraph(toBeResult?.to_be) || !Array.isArray(toBeResult?.recommendations)) {
-      return new Response(
-        JSON.stringify({
-          error: "A IA não retornou a modelagem to-be.",
-          debug_keys: Object.keys(toBeResult ?? {}),
-          debug_stop_reason: toBeStopReason,
-        }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // 4) Recomendações do to-be
+    const recommendations = await callClaudeSingleField<string[]>(
+      `${baseSystem}\n\nListe, em português, as melhorias aplicadas na versão to-be em relação ao as-is, cada uma citando o princípio ECRS usado (Eliminar/Combinar/Reorganizar/Simplificar). Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
+      `Modelagem as-is:\n${asIsSummaryText}\n\nModelagem to-be:\n${graphSummaryText(toBeRaw)}`,
+      "submit_recommendations",
+      "recommendations",
+      { type: "array", items: { type: "string" } }
+    );
 
-    const asIsGraph = toBpmnGraph(asIsResult.as_is);
-    const toBeGraph = toBpmnGraph(toBeResult.to_be);
+    const asIsGraph = toBpmnGraph(asIsRaw);
+    const toBeGraph = toBpmnGraph(toBeRaw);
     const asIsXml = buildBpmnXml(asIsGraph);
     const toBeXml = buildBpmnXml(toBeGraph);
     const asIsMetrics = computeGraphMetrics(asIsGraph);
@@ -285,14 +287,10 @@ Deno.serve(async (req: Request) => {
 
     return new Response(
       JSON.stringify({
-        processName: asIsResult.as_is.process_name,
-        asIs: { xml: asIsXml, graph: asIsResult.as_is },
-        toBe: { xml: toBeXml, graph: toBeResult.to_be },
-        analysis: {
-          summary: asIsResult.summary,
-          issues_found: asIsResult.issues_found,
-          recommendations: toBeResult.recommendations,
-        },
+        processName: asIsRaw.process_name,
+        asIs: { xml: asIsXml, graph: asIsRaw },
+        toBe: { xml: toBeXml, graph: toBeRaw },
+        analysis: { summary, issues_found: issuesFound, recommendations },
         metrics: {
           steps_before: asIsMetrics.steps,
           steps_after: toBeMetrics.steps,
@@ -303,6 +301,12 @@ Deno.serve(async (req: Request) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
+    if (error instanceof AiFieldError) {
+      return new Response(
+        JSON.stringify({ error: error.message, debug_keys: error.debugKeys, debug_stop_reason: error.stopReason }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
     return new Response(JSON.stringify({ error: `Erro inesperado: ${(error as Error).message}` }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
