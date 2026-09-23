@@ -128,11 +128,49 @@ function isValidRawGraph(graph: unknown): graph is RawGraph {
   return !!g && typeof g.process_name === "string" && Array.isArray(g.lanes) && Array.isArray(g.elements) && Array.isArray(g.flows);
 }
 
+/** Descreve o processo só com nomes (sem ids técnicos), para alimentar as chamadas seguintes:
+ *  evita que o modelo cite "task_x" nos textos e gasta menos tokens. */
 function graphSummaryText(graph: RawGraph): string {
-  const lanesText = graph.lanes.map((l) => `${l.id} (${l.name})`).join(", ");
-  const elementsText = graph.elements.map((e) => `${e.id} [${e.type}] "${e.name}" (lane: ${e.lane})`).join("\n");
-  const flowsText = graph.flows.map((f) => `${f.source} -> ${f.target}${f.name ? ` (${f.name})` : ""}`).join("\n");
-  return `Processo: ${graph.process_name}\n\nRaias: ${lanesText}\n\nElementos:\n${elementsText}\n\nFluxos:\n${flowsText}`;
+  const kind: Record<string, string> = {
+    startEvent: "Início",
+    endEvent: "Fim",
+    task: "Atividade",
+    userTask: "Atividade do usuário",
+    serviceTask: "Atividade automática",
+    exclusiveGateway: "Decisão",
+    parallelGateway: "Paralelismo",
+  };
+  const nameOf = new Map(graph.elements.map((e) => [e.id, e.name || e.id]));
+  const perLane = graph.lanes
+    .map(
+      (l) =>
+        `${l.name}:\n` +
+        graph.elements
+          .filter((e) => e.lane === l.id)
+          .map((e) => `  - [${kind[e.type] ?? e.type}] ${e.name}`)
+          .join("\n")
+    )
+    .join("\n");
+  const flows = graph.flows
+    .map((f) => `${nameOf.get(f.source) ?? f.source} -> ${nameOf.get(f.target) ?? f.target}${f.name ? ` (${f.name})` : ""}`)
+    .join("\n");
+  return `Processo: ${graph.process_name}\n\nAtividades por responsável:\n${perLane}\n\nSequência:\n${flows}`;
+}
+
+/** JSON.parse tolerante: o modelo às vezes fecha o objeto com chaves/colchetes a mais no final. */
+function parseLooseJson(text: string): unknown {
+  let t = text.trim();
+  let lastError: unknown;
+  for (let i = 0; i < 4; i++) {
+    try {
+      return JSON.parse(t);
+    } catch (e) {
+      lastError = e;
+      if (!/[}\]]$/.test(t)) break;
+      t = t.slice(0, -1).trimEnd();
+    }
+  }
+  throw lastError;
 }
 
 class AiFieldError extends Error {
@@ -303,7 +341,7 @@ async function callClaudeSingleFieldOnce<T>(
   let value: unknown = toolUse.input[fieldName];
   if (typeof value === "string" && (fieldSchema.type === "object" || fieldSchema.type === "array")) {
     try {
-      value = JSON.parse(value);
+      value = parseLooseJson(value);
     } catch (parseError) {
       const text = value as string;
       entry.note = `texto JSON inválido (${(parseError as Error).message}; ${text.length} caracteres; início: ${text.slice(0, 100)} | fim: ${text.slice(-100)})`;
