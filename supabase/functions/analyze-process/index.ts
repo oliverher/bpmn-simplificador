@@ -6,7 +6,7 @@ const SONNET = "claude-sonnet-5";
 const GRAPH_MODELS = [SONNET];
 // Resumo, problemas e melhorias são textos curtos: esforço de raciocínio baixo.
 const TEXT_MODELS = [SONNET];
-const TEXT_EFFORT: Effort | undefined = undefined;
+const TEXT_EFFORT: Effort | undefined = "low";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -298,7 +298,16 @@ async function callClaudeSingleFieldOnce<T>(
       data.stop_reason
     );
   }
-  return { value: toolUse.input[fieldName] as T, entry };
+  // O modelo às vezes devolve o objeto/lista inteiro como texto JSON em vez de estruturado.
+  let value: unknown = toolUse.input[fieldName];
+  if (typeof value === "string" && (fieldSchema.type === "object" || fieldSchema.type === "array")) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      /* mantém o texto; a validação rejeita e a chamada é repetida */
+    }
+  }
+  return { value: value as T, entry };
 }
 
 Deno.serve(async (req: Request) => {
