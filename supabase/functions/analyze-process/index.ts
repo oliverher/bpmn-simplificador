@@ -179,6 +179,11 @@ async function callClaudeTool(system: string, userContent: string, tool: Record<
   return toolUse.input;
 }
 
+function isValidRawGraph(graph: unknown): graph is RawGraph {
+  const g = graph as RawGraph | undefined;
+  return !!g && typeof g.process_name === "string" && Array.isArray(g.lanes) && Array.isArray(g.elements) && Array.isArray(g.flows);
+}
+
 function graphSummaryText(graph: RawGraph): string {
   const lanesText = graph.lanes.map((l) => `${l.id} (${l.name})`).join(", ");
   const elementsText = graph.elements.map((e) => `${e.id} [${e.type}] "${e.name}" (lane: ${e.lane})`).join("\n");
@@ -229,7 +234,7 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (!asIsResult?.as_is) {
+    if (!isValidRawGraph(asIsResult?.as_is) || !Array.isArray(asIsResult?.issues_found) || !asIsResult?.summary) {
       return new Response(
         JSON.stringify({ error: "A IA não retornou a modelagem as-is.", debug_keys: Object.keys(asIsResult ?? {}) }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -250,7 +255,7 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (!toBeResult?.to_be) {
+    if (!isValidRawGraph(toBeResult?.to_be) || !Array.isArray(toBeResult?.recommendations)) {
       return new Response(
         JSON.stringify({ error: "A IA não retornou a modelagem to-be.", debug_keys: Object.keys(toBeResult ?? {}) }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
