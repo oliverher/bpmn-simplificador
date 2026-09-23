@@ -103,6 +103,25 @@ function toBpmnGraph(raw: RawGraph): BpmnGraph {
   };
 }
 
+/** Corrige desvios comuns do modelo: listas devolvidas como texto JSON e nome do processo omitido. */
+function normalizeRawGraph(fallbackName: string) {
+  return (graph: RawGraph): RawGraph => {
+    if (!graph || typeof graph !== "object") return graph;
+    const g = graph as unknown as Record<string, unknown>;
+    for (const key of ["lanes", "elements", "flows"]) {
+      if (typeof g[key] === "string") {
+        try {
+          g[key] = JSON.parse(g[key] as string);
+        } catch {
+          /* mantém como está; a validação vai rejeitar */
+        }
+      }
+    }
+    if (typeof g.process_name !== "string" || !g.process_name) g.process_name = fallbackName;
+    return graph;
+  };
+}
+
 function isValidRawGraph(graph: unknown): graph is RawGraph {
   const g = graph as RawGraph | undefined;
   return !!g && typeof g.process_name === "string" && Array.isArray(g.lanes) && Array.isArray(g.elements) && Array.isArray(g.flows);
@@ -182,15 +201,22 @@ async function callClaudeSingleField<T>(
   toolName: string,
   fieldName: string,
   fieldSchema: Record<string, unknown>,
-  isValid: (value: T) => boolean = () => true
+  isValid: (value: T) => boolean = () => true,
+  normalize: (value: T) => T = (v) => v
 ): Promise<T> {
   let lastError: AiFieldError | undefined;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const model = opts.models[Math.min(attempt, opts.models.length) - 1];
     try {
-      const { value, entry } = await callClaudeSingleFieldOnce<T>(opts, model, attempt, system, userContent, toolName, fieldName, fieldSchema);
+      const { value: raw, entry } = await callClaudeSingleFieldOnce<T>(opts, model, attempt, system, userContent, toolName, fieldName, fieldSchema);
+      const value = normalize(raw);
       if (!isValid(value)) {
-        lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, [fieldName], "invalid_structure");
+        const shape =
+          value && typeof value === "object"
+            ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}:${Array.isArray(v) ? "array" : typeof v}`)
+            : [typeof value];
+        console.log(JSON.stringify({ event: "invalid_structure", step: opts.step, model, attempt, shape }));
+        lastError = new AiFieldError(`A IA retornou o campo '${fieldName}' com estrutura incompleta.`, shape, "invalid_structure");
         continue;
       }
       entry.ok = true;
@@ -280,6 +306,7 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  const usage: UsageEntry[] = [];
   try {
     const body: RequestBody = await req.json();
 
@@ -303,7 +330,6 @@ Deno.serve(async (req: Request) => {
 
     const baseSystem = `Você é um especialista sênior em BPM (Business Process Management) e gestão de processos de negócio, com décadas de experiência mapeando e simplificando processos organizacionais (inclusive de órgãos públicos).`;
 
-    const usage: UsageEntry[] = [];
 
     // 1) Modelar o as-is
     const asIsRaw = await callClaudeSingleField<RawGraph>(
@@ -322,7 +348,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       "submit_as_is_graph",
       "as_is",
       graphSchema,
-      isValidRawGraph
+      isValidRawGraph,
+      normalizeRawGraph(body.inputType === "process_name" ? body.input : "Processo")
     );
 
     if (!isValidRawGraph(asIsRaw)) {
@@ -374,7 +401,8 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       "submit_to_be_graph",
       "to_be",
       graphSchema,
-      isValidRawGraph
+      isValidRawGraph,
+      normalizeRawGraph(asIsRaw.process_name)
     );
 
     if (!isValidRawGraph(toBeRaw)) {
@@ -422,9 +450,17 @@ Responda SOMENTE chamando a ferramenta com o campo solicitado.`,
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
+    // Chamadas que falharam também são cobradas: registra o consumo mesmo no erro.
+    const failedUsage = summarizeUsage(usage);
+    console.log(JSON.stringify({ event: "analysis_failed", error: (error as Error).message, ...failedUsage }));
     if (error instanceof AiFieldError) {
       return new Response(
-        JSON.stringify({ error: error.message, debug_keys: error.debugKeys, debug_stop_reason: error.stopReason }),
+        JSON.stringify({
+          error: error.message,
+          debug_keys: error.debugKeys,
+          debug_stop_reason: error.stopReason,
+          usage: failedUsage,
+        }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
